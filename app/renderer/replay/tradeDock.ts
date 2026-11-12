@@ -387,6 +387,7 @@ function positionRow(doc: Document, p: PositionRow, actions: DockActions): HTMLE
 
     row.append(
         side,
+        ...(p.symbol != null ? [cell(doc, 'Market', p.symbol)] : []),
         cell(doc, 'Size', formatSize(p.size)),
         cell(doc, 'Entry', formatMoney(p.entryPrice)),
         cell(doc, 'Open', formatSignedMoney(p.unrealized), pnlTone),
@@ -464,6 +465,7 @@ function orderRow(doc: Document, o: OrderRow, actions: DockActions): HTMLElement
 
     row.append(
         side,
+        ...(o.symbol != null ? [cell(doc, 'Market', o.symbol)] : []),
         cell(doc, 'Type', o.type),
         cell(doc, 'Size', formatSize(o.size)),
         cell(doc, 'Price', o.price == null ? '—' : formatMoney(o.price)),

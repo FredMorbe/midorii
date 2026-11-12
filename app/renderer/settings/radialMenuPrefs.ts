@@ -77,13 +77,19 @@ export function saveRadialMenuPrefs(prefs: RadialMenuPrefs): void {
     if (typeof window !== 'undefined') window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
-/** Keep one workspace on the machine-wide mapping, including live settings edits. */
+/** Keep one workspace on the machine-wide mapping, including live settings edits. Every
+ *  chart of a grid wears it, the ones a later layout adds included. */
 export function wireRadialMenu(workspace: VelaWorkspace): () => void {
     const apply = (): void => {
-        workspace.chart.drawings.setRadialMenu(loadRadialMenuPrefs().slots);
+        const { slots } = loadRadialMenuPrefs();
+        for (const cell of workspace.cells()) cell.chart.drawings.setRadialMenu(slots);
     };
     apply();
+    const offCells = workspace.on('cell:created', apply);
     const win = workspace.root.ownerDocument.defaultView;
     win?.addEventListener(CHANGE_EVENT, apply);
-    return () => win?.removeEventListener(CHANGE_EVENT, apply);
+    return () => {
+        offCells();
+        win?.removeEventListener(CHANGE_EVENT, apply);
+    };
 }

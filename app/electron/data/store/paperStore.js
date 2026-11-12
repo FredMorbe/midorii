@@ -78,6 +78,8 @@ export async function saveAccount(dir, account) {
     version: VERSION,
     symbol: account.symbol,
     session: account.session,
+    // The markets beyond the first, where the account trades more than one.
+    ...(account.extra != null ? { extra: account.extra } : {}),
     savedAt: Date.now(),
   };
   await writeAtomic(accountFile(dir), record);

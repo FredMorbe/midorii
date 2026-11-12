@@ -28,6 +28,19 @@ function run(params: Record<string, unknown>) {
 }
 
 describe('range fakeout strategy', () => {
+    it('enters only at the next open after a wick sweep closes through the midpoint without a gap', () => {
+        const series: OHLCV[] = SERIES.slice(0, 26).concat([
+            { time: SERIES[26]!.time, open: 100.5, high: 102, low: 99.3, close: 99.6, volume: 1 },
+            { time: SERIES[27]!.time, open: 99.6, high: 100, low: 99.2, close: 99.4, volume: 1 },
+        ]);
+        const strategy = buildStrategy('rangefakeout', {
+            minBars: 5, breakMode: 'wick', requireGap: false, capLeverage: false,
+        }, series);
+        const result = runBacktest({ bars: series, strategy, broker: FREE });
+        const entry = result.orders.find(order => order.tag?.startsWith('fakeout:'));
+        expect(entry).toMatchObject({ side: 'sell', placedAt: series[26]!.time, filledAt: series[27]!.time, fillPrice: 99.6 });
+    });
+
     it('sells the next open and targets the range low, stop beyond the fakeout', () => {
         const result = run({ targetMode: 'range' });
         const entry = result.orders.find((order) => order.tag?.startsWith('fakeout:'))!;

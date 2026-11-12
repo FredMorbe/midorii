@@ -184,6 +184,8 @@ class RangeIndicator implements NativeIndicator {
 
     private emit(): void {
         if (!this.ctx) return;
+        const breakMode = this.inputs.breakMode;
+        if (breakMode !== 'close' && breakMode !== 'wick') throw new Error(`range indicator: unknown breakMode "${String(breakMode)}"`);
         const ranges = detectRanges(this.ctx.bars(), {
             minBars: num(this.inputs.minBars, DEFAULTS.minBars),
             maxBars: num(this.inputs.maxBars, DEFAULTS.maxBars),
@@ -192,6 +194,7 @@ class RangeIndicator implements NativeIndicator {
             minTouches: num(this.inputs.minTouches, DEFAULTS.minTouches),
             touchZone: num(this.inputs.touchZone, DEFAULTS.touchZone),
             breakBuffer: num(this.inputs.breakBuffer, DEFAULTS.breakBuffer),
+            breakMode,
             lookback: num(this.inputs.lookback, DEFAULTS.lookback),
         });
         this.ctx.emit(buildRangeOutput(ranges, {
@@ -214,6 +217,11 @@ export const rangeDescriptor: NativeIndicatorDescriptor = {
      * them into the scale would zoom the chart out to whatever range sits furthest away. */
     autoscaleDrawings: false,
     inputsSchema: (): InputSchema[] => [
+        {
+            key: 'breakMode', title: 'Breakout trigger', type: 'string', defval: DEFAULTS.breakMode,
+            options: ['close', 'wick'],
+            tooltip: 'A close keeps wick sweeps inside the range. A wick freezes the confirmed range at its first swept edge; a bar sweeping both edges has no assigned direction.',
+        },
         {
             key: 'minBars',
             title: 'Min length',

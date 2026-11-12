@@ -1,6 +1,7 @@
 import type { OHLCV } from '../../../src/core/model/ohlcv';
 import type { RunnableStrategy } from '../../../shared/engine/backtest';
 import type { DetectionCache } from './detection';
+import type { RuleStrategy } from '../../../shared/strategies/rules.js';
 
 /**
  * What a strategy is, as a thing the app can list, configure and run.
@@ -28,6 +29,16 @@ export type StrategyParamValue = number | string | boolean | readonly string[];
 
 /** The values of a whole schema, keyed by field. */
 export type StrategyParams = Record<string, StrategyParamValue>;
+
+export interface StrategySizing {
+    pointValue: number;
+    sizeStep?: number | null;
+    minSize?: number | null;
+}
+
+export interface StrategyBuildOptions extends StrategySizing {
+    definition?: RuleStrategy;
+}
 
 /**
  * What kind of control a field asks for.
@@ -71,6 +82,8 @@ export interface StrategySpec {
     id: string;
     name: string;
     description: string;
+    /** Historical research strategies are unavailable to trading bots. */
+    researchOnly?: boolean;
     /** The chart indicator this is built on, so a host can offer to draw what it traded. */
     indicator?: string;
     /** What the indicator it reads is called, for a screen that has to explain the
@@ -79,6 +92,8 @@ export interface StrategySpec {
     /** The timeframe the defaults were chosen for, in the app's timeframe spelling. The Backtest
      *  tab switches to it when the strategy is picked and when its settings are reset. */
     timeframe?: string;
+    /** Research form defaults applied when selecting a preset; never broker or bot settings. */
+    backtestDefaults?: { symbol: string; balance: number; pointValue: number; sizeStep: number; minSize: number };
     /** Entry, stop, target and size — see {@link StrategyRules}. */
     rules?: StrategyRules;
     /** Risk first, then whatever the strategy itself asks. */
@@ -95,7 +110,7 @@ export interface StrategySpec {
     /** Detection over `bars` plus the rules that act on it. `params` must already be resolved
      *  against the schema — see `resolveStrategyParams`. A sweep passes a `cache`, which is
      *  valid for ONE stretch of bars; see detection.ts. */
-    build(params: StrategyParams, bars: readonly OHLCV[], cache?: DetectionCache): RunnableStrategy<StrategyParams>;
+    build(params: StrategyParams, bars: readonly OHLCV[], cache?: DetectionCache, sizing?: StrategySizing): RunnableStrategy<StrategyParams>;
 }
 
 /**

@@ -5,17 +5,20 @@ import { runBacktest, type BacktestResult } from '../../../shared/engine/backtes
 import { DEFAULT_COSTS, NO_COSTS } from '../../../shared/engine/broker.js';
 import { MAX_COMBINATIONS, RANK_METRICS, countCombinations, detectionCount } from '../../../shared/analysis/sweep.js';
 import type { RankMetricId, SweepEntry, SweepRanges } from '../../../shared/analysis/sweep';
-import { buildStrategy, describeParams, detectionKeysOf, resolveStrategyParams, strategyCatalog } from '../strategies';
+import { buildStrategy, describeParams, detectionKeysOf, resolveStrategyParams, strategyCatalog, getRuleStrategies } from '../strategies';
 import type { StrategyInfo, StrategyParam, StrategyParams } from '../strategies';
 import type { MidoriBar, MidoriDatasetMeta, MidoriSource, MidoriTrade } from '../midori';
 import { formatDay, formatMoney, formatPrice, formatSignedMoney, formatSize, formatWhen } from '../format';
 import { openCsvImportDialog } from '../data/csvImportDialog';
 import { button, ensureFigureStyles, equityCurveSvg, sectionLabel, settingsGrid, statGrid, tile, tileGrid, tradesTable } from '../runs/runViews';
 import { startSweep, type SweepHandle } from './sweepClient';
+import { mountSearchView } from './searchView';
 import type { SweepRun } from './sweepRunner';
 import { ensureSweepStyles, overfitNote, sweepTable } from './sweepViews';
 import { groupBacktestParams } from './formLayout';
+import { strategySettingsSnapshot, storedStrategySettings, type StrategySettingsSnapshot } from '../strategies/settingsTransfer';
 import { badgeGroup, contextualParam } from '../strategies/paramFields';
+import { refreshResearchStrategies } from '../strategies/researchLibrary';
 import {
     BACKTEST_TRADE_REVIEW_TYPE,
     TRADE_INPUT,
@@ -535,12 +538,42 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
     root.append(bar, body);
     host.appendChild(root);
 
-    const catalog = strategyCatalog();
+    let catalog = strategyCatalog();
+    const searchView = mountSearchView(body, (review) => {
+        const interval = TIMEFRAMES.find((t) => timeframeToMs(t.value) === review.data.stepMs)?.value
+            ?? String(review.data.stepMs / MINUTE);
+        const snapshot = strategySettingsSnapshot(review.config.strategy, review.params, interval);
+        strategyId = review.config.strategy;
+        symbol = review.data.symbol;
+        timeframe = interval;
+        origin = LIBRARY;
+        balance = review.config.balance;
+        pointValue = review.config.pointValue;
+        sizeStep = review.config.sizeStep ?? 0;
+        minSize = review.config.minSize ?? 0;
+        costsOn = Object.values(review.config.costs).some((value) => value > 0);
+        intrabar = review.result.resolution === 'intrabar';
+        from = review.data.periods[review.period].from;
+        to = review.data.periods[review.period].to;
+        for (const [key, value] of Object.entries(review.params)) paramsFor(strategyId)[key] = value as StrategyParams[string];
+        result = review.result;
+        resultBars = review.bars;
+        resultSettings = snapshot;
+        savedId = null;
+        sweepResult = null;
+        selectedTradeIndex = 0;
+        mode = 'single';
+        searchView.hide();
+        inner.hidden = false;
+        status = { text: `${review.period === 'holdout' ? 'Final' : 'Validation'} backtest from the job’s saved data and strategy snapshot. Use settings for strategy to keep this candidate. Running again uses current local history and the current engine.` };
+        paint();
+    });
+
 
     /* ── the form ────────────────────────────────────────────────────────── */
 
     /** Single run, or every combination of a set of ranges. */
-    let mode: 'single' | 'sweep' = 'single';
+    let mode: 'single' | 'sweep' | 'jobs' = 'single';
     let datasets: MidoriDatasetMeta[] = [];
     let venues: MidoriSource[] = [];
     let loadError: string | null = null;
@@ -607,6 +640,7 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
     let handle: SweepHandle | null = null;
 
     let result: BacktestResult | null = null;
+    let resultSettings: StrategySettingsSnapshot | null = null;
     let savedId: string | null = null;
     let sweepResult: SweepRun | null = null;
     let sweepSavedId: string | null = null;
@@ -680,7 +714,21 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
 
     /** Switch to the timeframe a strategy's defaults were chosen for, when this market has it. */
     function applyPresetTimeframe(id: string): void {
-        const preset = catalog.find((s) => s.id === id)?.timeframe;
+        const spec = catalog.find((s) => s.id === id);
+        const defaults = spec?.backtestDefaults;
+        if (defaults) {
+            balance = defaults.balance;
+            pointValue = defaults.pointValue;
+            sizeStep = defaults.sizeStep;
+            minSize = defaults.minSize;
+            const dataset = datasets.find((d) => d.symbol === defaults.symbol);
+            if (dataset && (origin !== LIBRARY || symbol !== defaults.symbol)) {
+                origin = LIBRARY;
+                symbol = defaults.symbol;
+                resetRange(dataset);
+            }
+        }
+        const preset = spec?.timeframe;
         if (preset && timeframes().some((t) => t.value === preset)) timeframe = preset;
     }
 
@@ -702,14 +750,40 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
         note.textContent = `Reset puts every setting here back on the strategy’s own defaults`
             + `${presetLabel ? `, on ${presetLabel}` : ''}.`;
         const reset = button('Reset to defaults');
+        const use = button('Use settings for strategy', 'primary');
+        use.disabled = running;
+        use.onclick = () => {
+            try {
+                void transferSettings(strategySettingsSnapshot(spec.id, paramsFor(spec.id), timeframe), use);
+            } catch (error) {
+                say(error instanceof Error ? error.message : String(error), true);
+            }
+        };
         reset.onclick = () => {
             settings.set(spec.id, resolveStrategyParams(spec.id, {}));
             applyPresetTimeframe(spec.id);
             status = { text: 'Settings are back on the strategy’s own defaults.' };
             paint();
         };
-        el.append(note, reset);
+        const actions = doc.createElement('div');
+        actions.className = 'midorii-backtest-action-buttons';
+        actions.append(use, reset);
+        el.append(note, actions);
         return el;
+    }
+
+    async function transferSettings(snapshot: StrategySettingsSnapshot, control: HTMLButtonElement): Promise<void> {
+        control.disabled = true;
+        try {
+            const stored = await window.midori.strategies.save(snapshot.strategy, storedStrategySettings(snapshot));
+            strategyDefaults = stored;
+            seededFrom = JSON.stringify(stored);
+            status = { text: 'Strategy settings saved. Select this strategy in a new bot, or use “Load saved strategy settings” in an existing stopped bot. Existing bots keep their own settings.' };
+        } catch (error) {
+            status = { text: `Could not save strategy settings: ${error instanceof Error ? error.message : String(error)}`, error: true };
+        } finally {
+            paint();
+        }
     }
 
     function rangesFor(id: string): SweepRanges {
@@ -762,6 +836,8 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
 
     async function refresh(): Promise<void> {
         try {
+            await refreshResearchStrategies();
+            catalog = strategyCatalog();
             const [nextDatasets, nextVenues, nextDefaults] = await Promise.all([
                 window.midori.data.datasets(),
                 window.midori.data.sources(),
@@ -883,6 +959,7 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
 
         running = true;
         result = null;
+        resultSettings = null;
         resultBars = [];
         selectedTradeIndex = 0;
         savedId = null;
@@ -890,13 +967,17 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
         paint();
 
         try {
+            const params = resolveStrategyParams(strategyId, paramsFor(strategyId));
+            const snapshot = strategySettingsSnapshot(strategyId, params, timeframe);
+            const definition = getRuleStrategies().find((entry) => entry.id === snapshot.strategy) ?? null;
             const { bars, baseBars } = await loadBars();
 
             say(`Running ${bars.length.toLocaleString()} bars…`);
             await nextFrame();
 
-            const params = resolveStrategyParams(strategyId, paramsFor(strategyId));
-            const built = buildStrategy(strategyId, params, bars);
+            resultSettings = snapshot;
+            const built = buildStrategy(snapshot.strategy, snapshot.params, bars, undefined,
+                { pointValue, sizeStep: sizeStep > 0 ? sizeStep : null, minSize: minSize > 0 ? minSize : null, definition: definition ?? undefined });
             result = runBacktest({
                 bars,
                 baseBars,
@@ -920,6 +1001,7 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
                     strategy: spec.id,
                     strategyName: spec.name,
                     params,
+                    definition,
                     symbol: market(),
                     timeframe,
                     from: bars[0]!.time,
@@ -1987,6 +2069,18 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
         );
         const el = resultCard.body;
 
+        if (resultSettings) {
+            const use = button('Use settings for strategy', 'primary');
+            const snapshot = resultSettings;
+            use.onclick = () => { void transferSettings(snapshot, use); };
+            const actions = doc.createElement('div');
+            actions.className = 'midorii-backtest-actions';
+            const copy = doc.createElement('span');
+            copy.textContent = 'Copy the settings and bar interval used by this run to the strategy.';
+            actions.append(copy, use);
+            el.appendChild(actions);
+        }
+
         el.appendChild(statGrid(result.stats));
         el.appendChild(equityCurveSvg(
             result.equityCurve,
@@ -2015,7 +2109,7 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
         }
 
         el.appendChild(sectionLabel('Settings'));
-        el.appendChild(settingsGrid(describeParams(strategyId, paramsFor(strategyId))));
+        el.appendChild(settingsGrid(describeParams(resultSettings?.strategy ?? strategyId, resultSettings?.params ?? paramsFor(strategyId))));
 
         if (trades.length > 0) {
             el.appendChild(sectionLabel('Trades'));
@@ -2188,19 +2282,31 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
          * venue, and the Import button is on it. Only the market picker has nothing in it. */
         if (datasets.length === 0 && origin === LIBRARY) origin = venues[0]?.id ?? LIBRARY;
 
+        if (mode === 'jobs') return;
         paintForm();
         paintResult();
         paintSweepResult();
+        if (running) {
+            for (const control of inner.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input, button, select')) {
+                if (control.textContent !== 'Stop') control.disabled = true;
+            }
+        }
     }
 
-    const modeButtons = new Map<'single' | 'sweep', HTMLButtonElement>();
-    for (const [id, label] of [['single', 'Single run'], ['sweep', 'Sweep']] as const) {
+    const modeButtons = new Map<'single' | 'sweep' | 'jobs', HTMLButtonElement>();
+    for (const [id, label] of [['single', 'Single run'], ['sweep', 'Sweep'], ['jobs', 'Search jobs']] as const) {
         const b = doc.createElement('button');
         b.className = 'midorii-backtest-tab';
         b.textContent = label;
         b.onclick = () => {
             if (running) return;
             mode = id;
+            inner.hidden = id === 'jobs';
+            if (id === 'jobs') {
+                void searchView.show({ strategy: strategyId, base: { ...paramsFor(strategyId) }, symbol: market(), timeframe,
+                    from, to, axes: { ...rangesFor(strategyId) }, balance, costs: costsOn, pointValue,
+                    sizeStep: sizeStep > 0 ? sizeStep : null, minSize: minSize > 0 ? minSize : null, intrabar });
+            } else searchView.hide();
             status = null;
             paint();
         };

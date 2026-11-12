@@ -19,6 +19,10 @@ import type { BotRunner } from './BotRunner';
 import { mountBotForm, type BotForm } from './botForm';
 import { botId, newBot, type BotConfig } from './botTypes';
 import { botTape } from './botTape';
+import { createAssetPicker } from './assetPicker';
+import { askToArm } from '../trading/capitalArmDialog';
+import { resolveStrategyParams } from '../strategies';
+import { savedStrategyTimeframe } from '../strategies/settingsTransfer';
 
 /**
  * The Trading Bot tab: the chart's own trading screen, run by a strategy instead of by a
@@ -122,20 +126,55 @@ ${overlayScrollbarCss('.midorii-bot-settings')}
 
 /* The live pane: chart on top, then the dock, then the tape. */
 .midorii-bot-live { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.midorii-bot-account-rail {
+    flex: none; display: flex; align-items: center; gap: 18px;
+    min-height: 66px; padding: 9px 18px;
+    border-bottom: 1px solid var(--vela-border);
+    background: var(--vela-surface);
+}
+.midorii-bot-account-copy { flex: 1 1 auto; min-width: 0; }
+.midorii-bot-account-label {
+    display: block; color: var(--vela-accent-bright, #2962ff);
+    font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase;
+}
+.midorii-bot-account-copy strong {
+    display: block; margin-top: 1px; color: var(--vela-fg-bright);
+    font-size: 14px; font-weight: 650;
+}
+.midorii-bot-account-copy p {
+    margin: 1px 0 0; color: var(--vela-fg-muted); font-size: 11.5px;
+}
+.midorii-bot-account-link {
+    flex: none; border: 1px solid var(--vela-border-strong);
+    border-radius: var(--vela-radius-sm); padding: 7px 11px;
+    background: var(--vela-surface-overlay); color: var(--vela-fg-bright);
+    font: 600 11.5px var(--vela-font, sans-serif); cursor: pointer;
+}
+.midorii-bot-account-link:hover { background: var(--vela-hover); }
+.midorii-bot-account-link:focus-visible,
+.midorii-bot-tab:focus-visible { outline: 2px solid var(--vela-accent-bright, #2962ff); outline-offset: 2px; }
 .midorii-bot-chart { flex: 1 1 auto; min-height: 0; position: relative; }
 .midorii-bot-tape {
-    flex: 0 0 auto; height: 150px; min-height: 0;
+    flex: 0 0 auto; height: 220px; min-height: 0;
     border-top: 1px solid var(--vela-border);
     background: var(--vela-surface);
-    overflow: auto;
+    display: flex; flex-direction: column; overflow: hidden;
 }
 ${overlayScrollbarCss('.midorii-bot-tape')}
+@media (max-width: 900px) {
+    .midorii-bot-account-rail { align-items: flex-start; flex-direction: column; gap: 7px; }
+    .midorii-bot-account-link { align-self: flex-start; }
+}
+@media (max-height: 700px) {
+    .midorii-bot-tape { height: 170px; }
+}
 
 .midorii-bot-empty { padding: 28px 20px; color: var(--vela-fg-muted); line-height: 1.65; max-width: 620px; }
 .midorii-bot-empty h2 { margin: 0 0 8px; font-size: 15px; color: var(--vela-fg-bright); }
 .midorii-bot-empty p { margin: 0 0 10px; }
 
 .midorii-bot-figs { display: inline-flex; align-items: center; gap: 14px; flex: none; font-size: 12px; }
+.midorii-bot-figs[hidden] { display: none !important; }
 .midorii-bot-fig { display: inline-flex; flex-direction: column; line-height: 1.3; }
 .midorii-bot-fig small { font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--vela-fg-faint); }
 .midorii-bot-fig b { font-weight: 600; color: var(--vela-fg-bright); font-variant-numeric: tabular-nums; }
@@ -229,6 +268,16 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     let formAccountTrades = 0;
     let formCapitalConfigured = false;
 
+    function maySwitchBot(nextId?: string): boolean {
+        if (formFor === selected && form?.dirty && nextId !== selected) {
+            pane = 'settings';
+            opts.notify('Save or discard this bot’s changes before switching bots.', 'error');
+            paint();
+            return false;
+        }
+        return true;
+    }
+
     /* ── the frame ───────────────────────────────────────────────────────── */
 
     const root = doc.createElement('div');
@@ -259,11 +308,23 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     livePane.className = 'midorii-bot-pane';
     const liveStack = doc.createElement('div');
     liveStack.className = 'midorii-bot-live';
+    const accountRail = doc.createElement('div');
+    accountRail.className = 'midorii-bot-account-rail';
+    const accountCopy = doc.createElement('div');
+    accountCopy.className = 'midorii-bot-account-copy';
+    const accountLabel = doc.createElement('span');
+    accountLabel.className = 'midorii-bot-account-label';
+    const accountTitle = doc.createElement('strong');
+    const accountHint = doc.createElement('p');
+    accountCopy.append(accountLabel, accountTitle, accountHint);
+    const accountLink = doc.createElement('button');
+    accountLink.className = 'midorii-bot-account-link';
+    accountRail.append(accountCopy, accountLink);
     const chartHost = doc.createElement('div');
     chartHost.className = 'midorii-bot-chart';
     const tapeHost = doc.createElement('div');
     tapeHost.className = 'midorii-bot-tape';
-    liveStack.append(chartHost, tapeHost);
+    liveStack.append(accountRail, chartHost, tapeHost);
     livePane.appendChild(liveStack);
 
     const settingsPane = doc.createElement('div');
@@ -280,7 +341,11 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     root.append(bar, main);
     host.appendChild(root);
 
+    // Built on this screen's own element — see assetPicker.ts on why not a chart's workspace.
+    const assets = createAssetPicker({ host: root, providers: opts.providers, notify: opts.notify });
+
     const tape = botTape(tapeHost);
+    accountLink.onclick = () => tape.showPrimary();
 
     /* ── the chart ───────────────────────────────────────────────────────── */
 
@@ -410,7 +475,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         if (market !== chartMarket && bot.symbol) {
             chartMarket = market;
             void chart.setMarket({ symbol: bot.symbol, timeframe: bot.timeframe }).catch((err: unknown) => (
-                opts.notify(`The bot’s market could not be charted: ${err instanceof Error ? err.message : String(err)}`, 'error')
+                opts.notify(`The bot’s asset could not be charted: ${err instanceof Error ? err.message : String(err)}`, 'error')
             ));
         }
 
@@ -430,38 +495,59 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
 
     /* ── the list and the head ───────────────────────────────────────────── */
 
+    const listItems = new Map<string, {
+        item: HTMLButtonElement;
+        dot: HTMLElement;
+        name: HTMLElement;
+        what: HTMLElement;
+    }>();
+
     function paintList(): void {
-        list.replaceChildren();
-        for (const bot of engine.list()) {
+        const bots = engine.list();
+        for (const [id, row] of listItems) {
+            if (bots.some(bot => bot.id === id)) continue;
+            row.item.remove();
+            listItems.delete(id);
+        }
+        for (const [index, bot] of bots.entries()) {
             const status = engine.status(bot.id);
-            const item = doc.createElement('button');
-            item.className = 'midorii-bot-item';
+            let entry = listItems.get(bot.id);
+            if (!entry) {
+                const item = doc.createElement('button');
+                item.className = 'midorii-bot-item';
+
+                const row = doc.createElement('div');
+                row.className = 'midorii-bot-item-head';
+                const dot = doc.createElement('span');
+                dot.className = 'midorii-bot-dot';
+                const name = doc.createElement('b');
+                row.append(dot, name);
+
+                const what = doc.createElement('span');
+                item.append(row, what);
+                item.onclick = () => {
+                    if (!maySwitchBot(bot.id)) return;
+                    selected = bot.id;
+                    paint();
+                };
+                item.oncontextmenu = (e) => {
+                    e.preventDefault();
+                    const current = engine.find(bot.id);
+                    if (current) openListMenu(current, item, e.clientX, e.clientY);
+                };
+                entry = { item, dot, name, what };
+                listItems.set(bot.id, entry);
+            }
+            const { item, dot, name, what } = entry;
             if (bot.id === selected) item.dataset.active = '1';
-
-            const row = doc.createElement('div');
-            row.className = 'midorii-bot-item-head';
-            const dot = doc.createElement('span');
-            dot.className = 'midorii-bot-dot';
+            else delete item.dataset.active;
             dot.dataset.state = status;
-            const name = doc.createElement('b');
             name.textContent = bot.name;
-            row.append(dot, name);
-
-            const what = doc.createElement('span');
             const spec = STRATEGIES[bot.strategy];
-            what.textContent = `${spec?.name ?? bot.strategy} · ${bot.symbol || 'no market'} · `
+            what.textContent = `${spec?.name ?? bot.strategy} · ${bot.symbol || 'no asset'} · `
                 + `${bot.venue === 'capital' ? 'live' : 'paper'}`;
-
-            item.append(row, what);
-            item.onclick = () => {
-                selected = bot.id;
-                paint();
-            };
-            item.oncontextmenu = (e) => {
-                e.preventDefault();
-                openListMenu(bot, item, e.clientX, e.clientY);
-            };
-            list.appendChild(item);
+            // Moving a pressed control also interrupts a native click.
+            if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
         }
     }
 
@@ -477,18 +563,42 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         return el;
     }
 
-    function paintHead(bot: BotConfig | undefined): void {
-        head.replaceChildren();
-        if (!bot) return;
+    const title = doc.createElement('div');
+    title.className = 'midorii-bot-title';
+    const headName = doc.createElement('b');
+    const sub = doc.createElement('span');
+    title.append(headName, sub);
+    const figs = doc.createElement('span');
+    figs.className = 'midorii-bot-figs';
+    const tabs = doc.createElement('span');
+    tabs.className = 'midorii-bot-tabs';
+    const paneButtons = new Map<Pane, HTMLButtonElement>();
+    for (const [id, label] of [['live', 'Live'], ['settings', 'Settings']] as const) {
+        const b = doc.createElement('button');
+        b.className = 'midorii-bot-tab';
+        b.textContent = label;
+        b.onclick = () => { pane = id; paint(); };
+        paneButtons.set(id, b);
+        tabs.appendChild(b);
+    }
+    const toggle = button('Start', 'primary');
+    toggle.onclick = () => {
+        const bot = engine.find(selected);
+        if (bot) void toggleBot(bot);
+    };
 
+    function paintHead(bot: BotConfig | undefined): void {
+        if (!bot) {
+            head.replaceChildren();
+            return;
+        }
+        // Feed updates must preserve the controls between pointer down and pointer up.
+        if (title.parentElement !== head) head.append(title, figs, tabs, toggle);
         const runner = engine.displayRunner(bot.id);
         const status = engine.status(bot.id);
-
-        const title = doc.createElement('div');
-        title.className = 'midorii-bot-title';
-        const name = doc.createElement('b');
-        name.textContent = bot.name;
-        const sub = doc.createElement('span');
+        headName.textContent = bot.name;
+        delete sub.dataset.error;
+        delete sub.dataset.dirty;
         if (status === 'failed' && runner?.error) {
             sub.textContent = runner.error;
             sub.dataset.error = '1';
@@ -504,14 +614,15 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         } else if (runner?.paperController || runner?.capitalController) {
             sub.textContent = 'Stopped · last account and activity retained for review';
         } else {
-            sub.textContent = `Stopped · ${STRATEGIES[bot.strategy]?.name ?? bot.strategy} on ${bot.symbol || 'no market'}`;
+            sub.textContent = `Stopped · ${STRATEGIES[bot.strategy]?.name ?? bot.strategy} on ${bot.symbol || 'no asset'}`;
         }
-        title.append(name, sub);
-        head.appendChild(title);
-
+        if (formFor === bot.id && form?.dirty) {
+            sub.textContent = 'Unsaved settings · Save & Start uses the selected asset';
+            sub.dataset.dirty = '1';
+        }
+        figs.replaceChildren();
+        figs.hidden = !(runner && (runner.paperController || runner.capitalController));
         if (runner && (runner.paperController || runner.capitalController)) {
-            const figs = doc.createElement('span');
-            figs.className = 'midorii-bot-figs';
             const equity = runner.equity();
             const move = equity - bot.balance;
             figs.append(
@@ -523,26 +634,17 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
                 figure('Resting', String(runner.restingOrders())),
                 figure('Today', String(runner.todaysTrades)),
             );
-            head.appendChild(figs);
         }
-
-        const tabs = doc.createElement('span');
-        tabs.className = 'midorii-bot-tabs';
-        for (const [id, label] of [['live', 'Live'], ['settings', 'Settings']] as const) {
-            const b = doc.createElement('button');
-            b.className = 'midorii-bot-tab';
-            b.textContent = label;
+        for (const [id, b] of paneButtons) {
             if (pane === id) b.dataset.active = '1';
-            b.onclick = () => { pane = id; paint(); };
-            tabs.appendChild(b);
+            else delete b.dataset.active;
         }
-        head.appendChild(tabs);
-
-        const toggle = button(status === 'stopped' || status === 'failed' ? 'Start' : 'Stop',
-            status === 'stopped' || status === 'failed' ? 'primary' : 'danger');
+        const stopped = status === 'stopped' || status === 'failed';
+        toggle.textContent = stopped
+            ? (formFor === bot.id && form?.dirty ? 'Save & Start' : 'Start') : 'Stop';
+        toggle.classList.toggle('vela-dialog-btn-primary', stopped);
+        toggle.classList.toggle('vela-dialog-btn-danger', !stopped);
         toggle.disabled = status === 'stopping';
-        toggle.onclick = () => void toggleBot(bot);
-        head.appendChild(toggle);
     }
 
     /* ── the list's right-click menu ─────────────────────────────────────── */
@@ -583,6 +685,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
                 const bot = engine.find(menuFor);
                 if (!bot) return;
                 if (id === 'edit') {
+                    if (!maySwitchBot(bot.id)) return;
                     selected = bot.id;
                     pane = 'settings';
                     paint();
@@ -617,15 +720,19 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     /* ── acting ──────────────────────────────────────────────────────────── */
 
     async function createBot(): Promise<void> {
+        if (!maySwitchBot()) return;
         const first = Object.keys(STRATEGIES)[0];
         if (!first) {
             opts.notify('This build has no strategies to run.', 'error');
             return;
         }
-        /* Seeded from the Chart tab's market where there is one: a bot is nearly always made
-         * while looking at the market it is meant to trade. */
-        const bot = newBot(first, chartMarket.split('|')[0] || '');
+        /* A new bot needs an explicit asset choice. The bot chart may still show the previous
+         * bot's market, which must never become this bot's trading instruction by accident. */
+        const bot = newBot(first, '');
         try {
+            const settings = (await window.midori.strategies.load())[first] ?? {};
+            bot.params = resolveStrategyParams(first, settings);
+            bot.timeframe = savedStrategyTimeframe(settings) ?? bot.timeframe;
             await engine.add(bot);
             selected = bot.id;
             pane = 'settings';
@@ -647,6 +754,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
      * one thing about it.
      */
     async function duplicateBot(bot: BotConfig): Promise<void> {
+        if (!maySwitchBot()) return;
         const copy: BotConfig = {
             ...bot,
             id: botId(),
@@ -682,7 +790,29 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         const status = engine.status(bot.id);
         try {
             if (status === 'stopped' || status === 'failed') {
-                await engine.start(bot.id);
+                if (formFor === bot.id && form?.dirty && !await form.save()) {
+                    pane = 'settings';
+                    paint();
+                    return;
+                }
+                const current = engine.find(bot.id);
+                if (!current) return;
+                let allowLive = false;
+                let revision: number | undefined;
+                if (current.venue === 'capital') {
+                    const environment = await window.midori.capital.environment();
+                    revision = environment.revision;
+                    if (environment.live) {
+                        const account = await window.midori.capital.account();
+                        allowLive = await askToArm(root, {
+                            live: true, botName: current.name, epic: current.symbol,
+                            accountName: account?.accountName, currency: account?.currency,
+                            balance: account?.balance.balance,
+                        });
+                        if (!allowLive) return;
+                    }
+                }
+                await engine.start(bot.id, { allowLive, revision });
                 pane = 'live';
             } else {
                 await engine.stop(bot.id);
@@ -781,7 +911,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
              * visible. The tab switch calls refresh(), which paints again with a real box. */
             if (!host.hidden) {
                 syncChart(bot);
-                paintLive(engine.displayRunner(bot.id), status !== 'running');
+                paintLive(bot, engine.displayRunner(bot.id), status !== 'running');
             }
         } else {
             const accountTrades = engine.displayRunner(bot.id)?.paperController?.broker.trades.length ?? 0;
@@ -798,7 +928,9 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
                     capitalConfigured,
                     accountTrades,
                     venueTimeframes,
+                    pickAsset: () => assets.choose(),
                     onSave: saveBot,
+                    onDirtyChange: () => schedulePaint(),
                     onDelete: () => {
                         const current = engine.find(bot.id);
                         if (current) void deleteBot(current);
@@ -826,7 +958,17 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
 
     /** The live half: the account card, the dock and the tape, including the retained readout
      *  after a runner has stopped. */
-    function paintLive(runner: BotRunner | null, readOnly = false): void {
+    function paintLive(bot: BotConfig, runner: BotRunner | null, readOnly = false): void {
+        const paper = runner?.paperController;
+        const tradeCount = paper?.history().length ?? 0;
+        accountLabel.textContent = bot.venue === 'paper' ? 'PAPER · BOT ACCOUNT' : 'CAPITAL.COM · BOT ACCOUNT';
+        accountTitle.textContent = bot.symbol || 'Choose an asset in Settings';
+        accountHint.textContent = bot.venue === 'paper'
+            ? 'This is the selected bot’s account. Chart studies can draw setups; only the trades below confirm an execution. The Chart tab has a separate account.'
+            : 'This bot’s orders appear in Activity below. The Chart tab has a separate account.';
+        accountLink.textContent = bot.venue === 'paper'
+            ? `View bot trades · ${tradeCount}` : 'View bot activity';
+        tape.render(runner, bot);
         if (!runner) {
             /* The card is left alone rather than hidden. It owns its own visibility — a
              * person can put it away with its corner button and the Settings tab can switch
@@ -834,10 +976,8 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
              * reflow that keeps it inside the plot. An empty account reads as empty. */
             strip?.update(EMPTY_ACCOUNT);
             dock?.render({ positions: [], orders: [] });
-            tape.render(null);
             return;
         }
-        const paper = runner.paperController;
         if (paper) {
             strip?.update(paper.account());
             dock?.render(paper.book(), { stats: paper.stats() });
@@ -857,7 +997,6 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
                 if (readOnly) control.disabled = true;
             }
         }
-        tape.render(runner);
     }
 
     /** Repaints are driven by a running bot's every tick, which is far more often than a
@@ -880,6 +1019,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         },
         selectBot(id: string): void {
             if (!engine.find(id)) return;
+            if (!maySwitchBot(id)) return;
             selected = id;
             pane = 'live';
             paint();

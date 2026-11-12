@@ -1,12 +1,14 @@
-import type { BacktestBar, BacktestResult } from '../../../shared/engine/backtest';
+import type { BacktestBar } from '../../../shared/engine/backtest';
 import { runBacktest } from '../../../shared/engine/backtest';
 import { DEFAULT_COSTS } from '../../../shared/engine/broker.js';
 import {
     bestAndWorst, expandSweep, rankResults, splitRange,
 } from '../../../shared/analysis/sweep.js';
-import type { RankMetricId, SweepEntry, SweepRanges, SweepStats } from '../../../shared/analysis/sweep';
+import type { RankMetricId, SweepEntry, SweepRanges } from '../../../shared/analysis/sweep';
 import type { Costs } from '../../../shared/engine/broker';
 import { buildStrategy, resolveStrategyParams, type DetectionCache } from '../strategies';
+import { alignSplitToBars, sliceBars, summarizeBacktest } from './experiment';
+export { alignSplitToBars, sliceBars } from './experiment';
 
 /**
  * Running every combination of a sweep, and checking the winners.
@@ -134,64 +136,6 @@ export interface SweepRun {
     resolution: 'intrabar' | 'pessimistic';
 }
 
-/** Only the figures worth keeping for every combination — there can be thousands. */
-function summarize(result: BacktestResult): SweepStats {
-    const s = result.stats;
-    return {
-        tradeCount: s.tradeCount,
-        netPnl: s.netPnl,
-        returnPct: s.returnPct,
-        winRate: s.winRate,
-        maxDrawdownPct: s.maxDrawdownPct,
-        profitFactor: s.profitFactor,
-        expectancy: s.expectancy,
-        feesPaid: s.feesPaid,
-    };
-}
-
-/**
- * The bars inside a half-open range.
- *
- * Half-open on purpose: the training stretch ends where the test stretch begins, and a bar
- * counted in both would let a combination be chosen partly on a bar it is then checked
- * against.
- */
-export function sliceBars(bars: readonly BacktestBar[], from: number, to: number): BacktestBar[] {
-    const out: BacktestBar[] = [];
-    for (const bar of bars) {
-        if (bar.time < from) continue;
-        if (bar.time >= to) break;
-        out.push(bar);
-    }
-    return out;
-}
-
-/**
- * Moves a split's boundary onto the start of an actual bar.
- *
- * `splitRange` cuts by a fraction of the clock, which almost never lands on a bar's own
- * start — bars have gaps (a session close, a halt), so the arithmetic cut can fall inside
- * one. Slicing there is fine for the bar itself, which simply goes whole to whichever side
- * it belongs on; it is NOT fine for what is underneath it. `makeSubBarLookup` in the engine
- * hands a bar every one of its own minutes, keyed by that bar's own start — so a cut inside
- * the bar would still give the WHOLE bar, minutes included, to one side, while `sliceBars`
- * on the base-bar array (keyed by minute, not by parent bar) would divide those same
- * minutes between train and test by raw timestamp. A fill that happened in the half of the
- * bar assigned to the other side would then be invisible to intrabar resolution, silently,
- * on every sweep that does not happen to land its split exactly on a bar.
- *
- * Rounding forward — to the next bar at or after the arithmetic cut — keeps the split
- * half-open exactly like `sliceBars` already reads it: the bar found becomes the first bar
- * of test, never a bar shared between the two.
- */
-export function alignSplitToBars(
-    split: { train: { from: number; to: number }; test: { from: number; to: number } },
-    bars: readonly BacktestBar[],
-): { train: { from: number; to: number }; test: { from: number; to: number } } {
-    const cut = bars.find((b) => b.time >= split.train.to)?.time ?? bars[bars.length - 1]!.time;
-    return { train: { from: split.train.from, to: cut }, test: { from: cut, to: split.test.to } };
-}
-
 /**
  * Hands the thread back so a posted Stop can be read.
  *
@@ -274,12 +218,12 @@ export async function runSweep(options: SweepOptions): Promise<SweepRun> {
         const result = runBacktest({
             bars: trainBars,
             baseBars: trainBase,
-            strategy: buildStrategy(strategyId, params, trainBars, trainCache),
+            strategy: buildStrategy(strategyId, params, trainBars, trainCache, { pointValue, sizeStep, minSize }),
             broker,
             stepMs,
         });
 
-        results.push({ params, stats: summarize(result) });
+        results.push({ params, stats: summarizeBacktest(result) });
 
         const now = Date.now();
         onProgress?.({
@@ -307,14 +251,14 @@ export async function runSweep(options: SweepOptions): Promise<SweepRun> {
         const result = runBacktest({
             bars: testBars,
             baseBars: testBase,
-            strategy: buildStrategy(strategyId, entry.params, testBars, testCache),
+            strategy: buildStrategy(strategyId, entry.params, testBars, testCache, { pointValue, sizeStep, minSize }),
             broker,
             stepMs,
             // testBars runs from the start of the whole loaded range for warm-up; only
             // the test period itself may become a fill, a trade, or an equity point.
             tradeFrom: split!.test.from,
         });
-        return { ...entry, outOfSample: summarize(result) };
+        return { ...entry, outOfSample: summarizeBacktest(result) };
     };
 
     return {

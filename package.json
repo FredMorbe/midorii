@@ -63,14 +63,21 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "tsup",
+    "build": "tsup && npm run build:search",
     "dev": "vite",
+    "mcp": "node app/mcp/server.mjs",
+    "mcp:setup": "node scripts/setup-mcp.mjs",
     "app": "concurrently -k -n VITE,ELECTRON -c cyan,green \"npm run dev\" \"wait-on tcp:5301 && electron .\"",
-    "start": "electron ."
+    "start": "electron .",
+    "build:search": "node scripts/build-search.mjs",
+    "preapp": "npm run build:search",
+    "prestart": "npm run build:search",
+    "pretest": "npm run build:search"
   },
   "devDependencies": {
     "concurrently": "^10.0.5",
     "electron": "^43.4.1",
+    "esbuild": "^0.28.1",
     "eslint": "^9.0.0",
     "tsup": "^8.0.0",
     "typescript": "~5.9.3",
@@ -81,6 +88,7 @@
   },
   "dependencies": {
     "@mathieuc/tradingview": "^3.5.2",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@zag-js/core": "^1.42.0",
     "@zag-js/dialog": "^1.42.0",
     "@zag-js/dom-query": "^1.42.0",
@@ -88,6 +96,7 @@
     "@zag-js/tooltip": "^1.42.0",
     "@zag-js/types": "^1.42.0",
     "@zag-js/vanilla": "^1.42.0",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "zod": "^4.6.7"
   }
 }

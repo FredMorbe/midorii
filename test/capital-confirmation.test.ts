@@ -35,21 +35,16 @@ describe('readConfirmation', () => {
         expect(c.dealId).toBeNull();
     });
 
-    it('treats an answer that does not say ACCEPTED as a refusal', () => {
-        // The permissive reading of these is the dangerous one: anything short of an explicit
-        // acceptance must not open a position in the app's own books.
-        expect(readConfirmation({ dealStatus: 'PENDING' }).accepted).toBe(false);
-        expect(readConfirmation({ status: 'OPEN' }).accepted).toBe(false);
-        expect(readConfirmation({}).accepted).toBe(false);
-        expect(readConfirmation(null).accepted).toBe(false);
-        expect(readConfirmation(undefined).accepted).toBe(false);
+    it('throws for an unresolved verdict instead of reporting a definitive refusal', () => {
+        for (const json of [{ dealStatus: 'PENDING' }, { status: 'OPEN' }, {}, null, undefined]) {
+            expect(() => readConfirmation(json)).toThrow(/outcome.*unknown/i);
+        }
     });
 
     it('always names a reason when it refused, even if the venue gave none', () => {
         // A refusal with an empty explanation still has to read as a refusal to whoever shows
         // it — `null` here would print as "the order failed because null".
         expect(readConfirmation({ dealStatus: 'REJECTED' }).reason).toBe('REJECTED');
-        expect(readConfirmation({}).reason).toBeTruthy();
     });
 
     it('takes the reason from whichever field the venue used', () => {

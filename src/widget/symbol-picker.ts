@@ -272,6 +272,9 @@ export interface SymbolPickerOptions {
     onSelect: (symbol: string) => void;
     onOpenChange?: (open: boolean) => void;
     host?: HTMLElement;
+    /** The dialog's heading and the small line above it. Default: the chart's own wording. */
+    title?: string;
+    eyebrow?: string;
     /** The row's icon URL — routed to the descriptor's OWNING provider
      *  (`resolveSymbolIcon`). Absent or `undefined` per row ⇒ the initials badge. */
     iconFor?: (d: SymbolDescriptor) => string | undefined;
@@ -381,8 +384,8 @@ export class SymbolPicker {
         });
 
         this.dialog = new Dialog({
-            title: 'Symbol Search',
-            eyebrow: 'Market',
+            title: opts.title ?? 'Symbol Search',
+            eyebrow: opts.eyebrow ?? 'Market',
             host: opts.host,
             closeOnInteractOutside: true,
             flush: true,

@@ -83,6 +83,14 @@ describe('the pattern itself', () => {
         expect(ranges[0]!.breakIndex).toBe(70);
     });
 
+    it('can freeze a confirmed range at the first wick instead of absorbing its sweep', () => {
+        const rows = [...trend(30, 100, 10), ...oscillate(40, 394, 406)];
+        rows[50] = [400, 420, 400, 400];
+        const range = detectRanges(bars(rows), { breakMode: 'wick' })[0]!;
+        expect(range).toMatchObject({ top: 406, bottom: 394, breakIndex: 50, breakDirection: 'up' });
+        expect(() => detectRanges(bars(rows), { breakMode: 'body' as never })).toThrow(/unknown breakMode/);
+    });
+
     it('marks a range still running at the last bar as active', () => {
         const ranges = detectRanges(bars([...trend(30, 100, 10), ...oscillate(40, 394, 406)]));
         expect(ranges).toHaveLength(1);

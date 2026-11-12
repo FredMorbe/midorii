@@ -17,7 +17,14 @@ import { registerNativeIndicator } from '../NativeIndicator';
 export const PRESSURE_CHANNELS_INDICATOR_TYPE = 'pressure-channels';
 
 const DEFAULTS = {
-    ...RANGE_DEFAULTS,
+    minBars: RANGE_DEFAULTS.minBars,
+    maxBars: RANGE_DEFAULTS.maxBars,
+    compression: RANGE_DEFAULTS.compression,
+    atrPeriod: RANGE_DEFAULTS.atrPeriod,
+    minTouches: RANGE_DEFAULTS.minTouches,
+    touchZone: RANGE_DEFAULTS.touchZone,
+    breakBuffer: RANGE_DEFAULTS.breakBuffer,
+    lookback: RANGE_DEFAULTS.lookback,
     confirmedOnly: true,
     showPressure: true,
     showMeter: true,

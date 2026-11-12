@@ -2,6 +2,7 @@ import type { BacktestBar } from '../../../shared/engine/backtest';
 import type { Costs } from '../../../shared/engine/broker';
 import type { RankMetricId, SweepRanges } from '../../../shared/analysis/sweep';
 import type { SweepProgress, SweepRun } from './sweepRunner';
+import type { RuleStrategy } from '../../../shared/strategies/rules.js';
 
 /**
  * What crosses the line between the page and the sweep's thread.
@@ -58,6 +59,7 @@ export function unpackBars(packed: Float64Array): BacktestBar[] {
 
 /** A sweep as it is asked for, with the bars already packed. */
 export interface SweepRequest {
+    definitions?: RuleStrategy[];
     strategy: string;
     ranges: SweepRanges;
     base: Record<string, unknown>;

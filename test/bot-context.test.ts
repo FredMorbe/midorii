@@ -201,6 +201,32 @@ describe('the guards, at the order gate', () => {
         expect(state.session).toEqual({ orderId: order.id });
     });
 
+    it('turns an entry the account refuses into a refused setup instead of a failed bar', () => {
+        // A closed market or an account read that is not current is a refusal for THIS setup.
+        // Thrown through the strategy it would read as the strategy failing.
+        const account = fakeAccount({ order: () => { throw new Error('The market is closed.'); } });
+        const onRefused = vi.fn();
+        const onOrder = vi.fn();
+        const state: Record<string, unknown> = {};
+        const ctx = context({ account, onRefused, onOrder, state });
+
+        const order = ctx.order({ side: 'buy', size: 1 });
+        state.session = { orderId: order.id };
+
+        expect(order.status).toBe('cancelled');
+        expect(order.id).toBeLessThan(0);
+        expect(onRefused).toHaveBeenCalledWith(expect.objectContaining({ side: 'buy' }), 'The market is closed.');
+        expect(onOrder).not.toHaveBeenCalled();
+        expect(state.session).toEqual({ orderId: order.id });
+    });
+
+    it('still throws when the account refuses a reduce-only order', () => {
+        // An exit that could not be placed is not a missed opportunity, and must stay loud.
+        const account = fakeAccount({ order: () => { throw new Error('Partial reductions are refused.'); } });
+        const ctx = context({ account });
+        expect(() => ctx.order({ side: 'sell', size: 1, reduceOnly: true })).toThrow(/Partial reductions/);
+    });
+
     it('never gates a reduce-only order', () => {
         // It can only make a position smaller. Refusing it would be the guards making a
         // position LARGER than the strategy intends.
@@ -264,4 +290,14 @@ describe('state', () => {
         ctx.state.session = { orderId: 9 };
         expect(state.session).toEqual({ orderId: 9 });
     });
+});
+
+
+it('attaches shorthand buy and sell protection to the submitted entry', () => {
+    const account = fakeAccount();
+    const ctx = context({ account });
+    ctx.buy({ size: 1, stopLoss: 95, takeProfit: 110 });
+    ctx.sell({ size: 1, stopLoss: 110, takeProfit: 95 });
+    expect(account.placed[0]?.bracket).toEqual({ stopLoss: 95, takeProfit: 110 });
+    expect(account.placed[1]?.bracket).toEqual({ stopLoss: 110, takeProfit: 95 });
 });

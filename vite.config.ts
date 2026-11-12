@@ -34,7 +34,11 @@ export default defineConfig({
     server: {
         port: 5301,
         strictPort: true,
-        fs: { allow: ['..', '../..'] },
+        fs: {
+            allow: ['..', '../..'],
+            deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml',
+                '**/.git/**', '**/.midorii/**', '**/.codex/**'],
+        },
     },
     build: { outDir: '../dist', emptyOutDir: true },
 });

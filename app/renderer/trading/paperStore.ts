@@ -33,6 +33,8 @@ export interface PaperAccountRecord {
     symbol: string;
     /** A `LiveSession.snapshot()`. */
     session: unknown;
+    /** The legs beyond the first and the account's own curve — see PaperAccount. */
+    extra?: unknown;
     /** When it was written. */
     savedAt: number;
 }
@@ -46,7 +48,7 @@ export interface PaperAccountRecord {
  */
 export async function loadPaperAccount(): Promise<PaperAccountRecord | null> {
     const stored = await window.midori.paper.load();
-    if (stored) return { symbol: stored.symbol, session: stored.session, savedAt: stored.savedAt };
+    if (stored) return { symbol: stored.symbol, session: stored.session, extra: stored.extra, savedAt: stored.savedAt };
 
     const legacy = readLegacyAccount();
     if (!legacy) return null;
@@ -57,7 +59,7 @@ export async function loadPaperAccount(): Promise<PaperAccountRecord | null> {
     return legacy;
 }
 
-export async function savePaperAccount(account: { symbol: string; session: unknown }): Promise<void> {
+export async function savePaperAccount(account: { symbol: string; session: unknown; extra?: unknown }): Promise<void> {
     await window.midori.paper.save(account);
 }
 
@@ -95,7 +97,7 @@ function dropLegacyAccount(): void {
 
 export interface PaperWriter {
     /** Write soon — at most once per {@link WRITE_INTERVAL_MS}. */
-    schedule(account: { symbol: string; session: unknown }): void;
+    schedule(account: { symbol: string; session: unknown; extra?: unknown }): void;
     /** Write whatever is waiting, now. */
     flush(): void;
     /** Drop anything waiting and stop the timer. */
@@ -111,7 +113,7 @@ export interface PaperWriter {
  * forever would be a growing queue nobody asked for.
  */
 export function paperWriter(): PaperWriter {
-    let pending: { symbol: string; session: unknown } | null = null;
+    let pending: { symbol: string; session: unknown; extra?: unknown } | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const write = (): void => {

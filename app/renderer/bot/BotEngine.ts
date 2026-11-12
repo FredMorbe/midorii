@@ -54,6 +54,7 @@ export class BotEngine {
     private readonly stoppedReadouts = new Map<string, BotRunner>();
     private readonly starts = new Map<string, Promise<void>>();
     private readonly stops = new Map<string, Promise<void>>();
+    private readonly accountChanges = new Set<string>();
     private readonly listeners = new Set<() => void>();
     private readonly opts: BotEngineOptions;
     private loaded = false;
@@ -106,6 +107,22 @@ export class BotEngine {
     }
 
     /**
+     * What the running bots on one venue account hold between them.
+     *
+     * Running ones only. A stopped bot has handed what it held to a person, and its last
+     * known figure is not being updated by anything.
+     */
+    private accountExposure(account: string): number {
+        let held = 0;
+        for (const runner of this.runners.values()) {
+            if (runner.accountKey !== account) continue;
+            if (runner.status !== 'running' && runner.status !== 'starting') continue;
+            held += runner.exposure();
+        }
+        return held;
+    }
+
+    /**
      * Read the stored bots.
      *
      * A record the current build cannot make sense of is dropped and said out loud rather
@@ -141,7 +158,7 @@ export class BotEngine {
         /* Accounts whose bot is gone. Only ever finds one left behind by a crash between the
          * two writes in `remove`, but left alone it would sit there for good carrying an
          * account's worth of trades. */
-        void sweepBotAccounts(bots.map((b) => b.id)).catch((err: unknown) => (
+        if (dropped === 0) void sweepBotAccounts(bots.map((b) => b.id)).catch((err: unknown) => (
             console.error('[midorii] could not sweep the orphaned bot accounts', err)
         ));
         if (dropped > 0) {
@@ -193,6 +210,9 @@ export class BotEngine {
 
     /** Add one. */
     async add(bot: BotConfig): Promise<void> {
+        if (this.bots.some((existing) => existing.id.toLowerCase() === bot.id.toLowerCase())) {
+            throw new Error('A bot with this id already exists.');
+        }
         this.bots = [...this.bots, bot];
         await this.persist();
         this.changed();
@@ -206,6 +226,7 @@ export class BotEngine {
      * would leave a stop placed by one set of rules being managed by another.
      */
     async update(bot: BotConfig): Promise<void> {
+        if (this.accountChanges.has(bot.id)) throw new Error('Wait for this bot account change before editing it.');
         const runner = this.runners.get(bot.id);
         if (runner) runner.update(bot); // throws while running — deliberately, see above
         this.stoppedReadouts.get(bot.id)?.update(bot);
@@ -224,8 +245,18 @@ export class BotEngine {
      * person can try again, or delete it deliberately after looking at what it did.
      */
     async remove(id: string): Promise<void> {
+        await this.changeAccount(id, () => this.removeOne(id));
+    }
+
+    private async removeOne(id: string): Promise<void> {
         const bot = this.find(id);
         if (!bot) return;
+        const running = this.runners.get(id);
+        if (running) {
+            running.stop();
+            await running.settle();
+        }
+        await this.requireNoLiveExposure(bot);
         const active = this.runners.get(id);
         const runner = active ?? this.stoppedReadouts.get(id);
 
@@ -280,11 +311,16 @@ export class BotEngine {
      * cannot be filed as finished while it is still moving.
      */
     async resetAccount(id: string): Promise<string | null> {
+        return this.changeAccount(id, () => this.resetOne(id));
+    }
+
+    private async resetOne(id: string): Promise<string | null> {
         if (this.runners.has(id)) {
             throw new Error('Stop the bot before starting its account over.');
         }
         const bot = this.find(id);
         if (!bot) throw new Error('That bot is gone.');
+        await this.requireNoLiveExposure(bot);
         const readout = this.stoppedReadouts.get(id);
         /* Prefer the stopped in-memory account. With no readout, a runner is built purely to
          * read the stored account and file it; neither path opens a feed or sends an order. */
@@ -314,6 +350,23 @@ export class BotEngine {
         }
     }
 
+    private async changeAccount<T>(id: string, action: () => Promise<T>): Promise<T> {
+        if (this.accountChanges.has(id)) throw new Error('This bot account is already being changed.');
+        this.accountChanges.add(id);
+        try { return await action(); }
+        finally { this.accountChanges.delete(id); }
+    }
+
+    private async requireNoLiveExposure(bot: BotConfig): Promise<void> {
+        const account = await window.midori.bots.account.load(bot.id);
+        const owned = account?.capital;
+        const runner = this.runners.get(bot.id) ?? this.stoppedReadouts.get(bot.id);
+        if (owned && (owned.uncertain || owned.positionDealIds.length > 0 || owned.workingOrderDealIds.length > 0)
+            || (bot.venue === 'capital' && runner && (runner.openPositions() > 0 || runner.restingOrders() > 0))) {
+            throw new Error('This bot owns or may own Capital.com exposure. Resolve it on the original account and refresh the bot before deleting or resetting its ownership record.');
+        }
+    }
+
     /**
      * Start a bot.
      *
@@ -321,10 +374,13 @@ export class BotEngine {
      * the app closed is running again when it opens. A live bot is marked the same way and
      * still is not resumed — see the file header.
      */
-    async start(id: string): Promise<void> {
+    async start(id: string, arming: { allowLive?: boolean; revision?: number } = {}): Promise<void> {
         if (this.shutdownTask) throw new Error('The app is closing; this bot cannot be started.');
+        if (this.accountChanges.has(id)) throw new Error('Wait for this bot account change before starting it.');
         const stopping = this.stops.get(id);
         if (stopping) await stopping;
+        if (this.shutdownTask) throw new Error('The app is closing; this bot cannot be started.');
+        if (this.accountChanges.has(id)) throw new Error('Wait for this bot account change before starting it.');
         const existing = this.starts.get(id);
         if (existing) return existing;
 
@@ -337,11 +393,26 @@ export class BotEngine {
         this.stoppedReadouts.delete(id);
 
         let runner = this.runners.get(id);
+        if (runner && runner.status !== 'running' && runner.status !== 'starting') {
+            await runner.settle();
+            if (this.shutdownTask) throw new Error('The app is closing; this bot cannot be started.');
+            if (this.accountChanges.has(id)) throw new Error('Wait for this bot account change before starting it.');
+            const otherStart = this.starts.get(id);
+            if (otherStart) return otherStart;
+            if (this.find(id) !== bot || this.runners.get(id) !== runner) {
+                throw new Error('The bot changed while its previous account was settling. Start it again with its current settings.');
+            }
+            runner.dispose();
+            this.runners.delete(id);
+            runner = undefined;
+        }
         if (!runner) {
             runner = new BotRunner({
+                ...arming,
                 bot,
                 providers: this.opts.providers,
                 onChange: () => this.changed(),
+                accountExposure: (account) => this.accountExposure(account),
             });
             this.runners.set(id, runner);
         }

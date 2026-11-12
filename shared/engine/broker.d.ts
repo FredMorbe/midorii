@@ -123,7 +123,7 @@ export declare class Broker {
     /** Money per point per unit — 1 unless an instrument says otherwise. */
     readonly pointValue: number;
     /** The smallest a size may move by, or null — see the constructor option. */
-    readonly sizeStep: number | null;
+    sizeStep: number | null;
     /** The least a position may ever be, or null — see the constructor option. */
     readonly minSize: number | null;
     /** Whether a resting limit fills on a touch or needs the level crossed. */
@@ -135,6 +135,7 @@ export declare class Broker {
 
     /** Throws while anything is open or waiting. */
     setPointValue(value: number): void;
+    setSizeGrid(step: number | null, minimum: number | null): void;
     /** Install the managed break-even and trail, or clear them with null. */
     setManagement(rules: Management | null): void;
     setQuote(bid: number | null, ask: number | null): void;

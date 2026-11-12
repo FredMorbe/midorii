@@ -71,6 +71,8 @@ export interface PositionRow {
     stopResult: number | null;
     /** Why moving the stop to break-even is refused right now, or null when it can be done. */
     breakEvenRefusal: string | null;
+    /** The market it is in, on an account that holds more than one. */
+    symbol?: string;
 }
 
 export interface OrderRow {
@@ -81,11 +83,15 @@ export interface OrderRow {
     /** Where it waits — a limit's price, or a stop's trigger. */
     price: number | null;
     tag: string | null;
+    /** The market it is in, on an account that holds more than one. */
+    symbol?: string;
 }
 
 export interface TradeBook {
     positions: PositionRow[];
     orders: OrderRow[];
+    /** The account trades more than one market, so each row says which one it is in. */
+    multi?: boolean;
 }
 
 /** The trade fields a history row reads. The engine's closed trade satisfies it. */
@@ -103,6 +109,8 @@ export interface ClosedTrade {
     riskPerUnit: number | null;
     /** What a point was worth on the account that closed it. Absent on older records. */
     pointValue?: number;
+    /** The market it was made in, on an account that trades more than one. */
+    symbol?: string;
 }
 
 /** One closed round trip, as a person reads it. */
@@ -119,6 +127,8 @@ export interface HistoryRow {
     r: number | null;
     /** How it ended: the exit tag the engine recorded ('stop', 'target', 'manual', …). */
     exitTag: string | null;
+    /** The market it was made in, on an account that trades more than one. */
+    symbol?: string;
 }
 
 /**
@@ -141,6 +151,7 @@ export function tradeHistory(trades: readonly ClosedTrade[]): HistoryRow[] {
         // The same R the run library reports afterwards, measured against the same unit.
         r: rMultiple({ netPnl: t.netPnl, size: t.size, riskPerUnit: t.riskPerUnit, pointValue: t.pointValue }),
         exitTag: t.exitTag,
+        ...(t.symbol != null ? { symbol: t.symbol } : {}),
     }));
     rows.reverse();
     return rows;

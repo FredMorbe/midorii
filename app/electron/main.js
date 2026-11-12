@@ -1,10 +1,16 @@
 import { app, BrowserWindow, nativeTheme } from 'electron';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { applyStoredBinanceSpotCredentials, applyStoredBybitCredentials, applyStoredCapitalCredentials, applyStoredProjectXCredentials, registerIpc, stopRecording } from './ipc.js';
 import { loadEnvLocal } from './loadEnv.js';
 import { TITLEBAR } from './titlebar.js';
 import { guardWindowClose } from './windowCloseGuard.js';
+import { restrictWindowNavigation } from './windowSecurity.js';
+import { registerSearchIpc } from './search/ipc.js';
+import { createResearchService } from '../mcp/service.mjs';
+import { startResearchBridge } from '../mcp/bridge.mjs';
+import { loadRules } from '../mcp/store.mjs';
+import { ipcMain } from 'electron';
 
 // TODO Phase 4: remove. Keeps userData pointed at the data already downloaded
 // under the old "project-midori" name, so the walking skeleton shows real
@@ -30,6 +36,8 @@ void applyStoredBybitCredentials();
 void applyStoredProjectXCredentials();
 
 let win = null;
+let researchBridge = null;
+let researchStart = null;
 
 function createWindow() {
   const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
@@ -63,6 +71,7 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  restrictWindowNavigation(win.webContents, isDev ? `${DEV_URL}/` : pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html')).href);
   guardWindowClose(win);
 
   win.once('ready-to-show', () => win.show());
@@ -95,7 +104,17 @@ function createWindow() {
 
 app.whenReady().then(() => {
   registerIpc();
+  registerSearchIpc(app);
   createWindow();
+  ipcMain.handle('research:strategies', () => loadRules(path.join(app.getPath('userData'), 'strategies')));
+  const service = createResearchService({ userData: app.getPath('userData'), notify: (change = {}) => {
+    if (win && !win.isDestroyed()) win.webContents.send('research:changed', change);
+  } });
+  researchStart = startResearchBridge({ service, connectionFile: isDev
+    ? path.join(__dirname, '..', '..', '.midorii', 'mcp.json')
+    : path.join(app.getPath('userData'), 'mcp.json') })
+    .then((bridge) => { researchBridge = bridge; })
+    .catch((error) => console.error('[midorii] research connector failed to start', error));
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -113,7 +132,7 @@ app.on('before-quit', (event) => {
   if (recordingStopped) return;
   event.preventDefault();
   recordingStopped = true;
-  void stopRecording()
+  void Promise.all([stopRecording(), (researchStart ?? Promise.resolve()).then(() => researchBridge?.close())])
     .catch((err) => console.error('[midorii] could not write out the recording before quitting', err))
     .finally(() => app.quit());
 });

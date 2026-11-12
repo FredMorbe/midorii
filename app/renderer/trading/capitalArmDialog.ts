@@ -84,6 +84,8 @@ export function setArmPrompt(on: boolean): void {
 }
 
 export interface ArmOptions {
+    /** Bots always ask, and explain unattended strategy execution. */
+    botName?: string;
     /** Whether the credentials point at the real-money account. */
     live: boolean;
     /** The account the venue reports, for the person to recognise. Null while unknown. */
@@ -102,7 +104,7 @@ export interface ArmOptions {
  * true without asking when the confirmation is switched off.
  */
 export async function askToArm(host: HTMLElement, opts: ArmOptions): Promise<boolean> {
-    if (!armPromptOn()) return true;
+    if (!opts.botName && !armPromptOn()) return true;
     const doc = host.ownerDocument;
     injectStyles(STYLE_ID, CSS, doc);
 
@@ -145,7 +147,9 @@ export async function askToArm(host: HTMLElement, opts: ArmOptions): Promise<boo
                 lead.className = 'midorii-arm-p';
                 lead.append(badge);
                 lead.append(doc.createTextNode(opts.live
-                    ? ` From here, an order placed on this chart is a real order on a real account. It cannot be undone, it will be filled at whatever the market is doing, and it can lose money.`
+                    ? opts.botName
+                        ? ' This bot can place real orders automatically on a real account. These orders can lose money.'
+                        : ' From here, an order placed on this chart is a real order on a real account. It cannot be undone, it will be filled at whatever the market is doing, and it can lose money.'
                     : ` This account trades at real market prices with money that is not real. Nothing here can cost you anything.`));
 
                 const account = doc.createElement('p');
@@ -157,7 +161,9 @@ export async function askToArm(host: HTMLElement, opts: ArmOptions): Promise<boo
 
                 const what = doc.createElement('p');
                 what.className = 'midorii-arm-p';
-                what.textContent = opts.live
+                what.textContent = opts.botName
+                    ? `Starting “${opts.botName}” lets its strategy send orders automatically while the app is open. Check the strategy, asset, and risk settings before continuing. Stop prevents new decisions; existing positions and resting orders remain at the venue.`
+                    : opts.live
                     ? 'Market orders only for now. Everything on this chart — the ticket, a block traded from a '
                     + 'right-click, a stop dragged to a new level — will go to the venue. What is drawn is what '
                     + 'the venue reports back, so a position appears only once it has actually opened.'

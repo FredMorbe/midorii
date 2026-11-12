@@ -1,4 +1,4 @@
-import type { IndicatorHandle } from '../../../src';
+import type { VisualsSink } from './accountCharts';
 import type { HostSettingsRow, VelaWorkspace } from '../../../src/workspace';
 import { contributeChartSettings } from '../shell/chartSettings';
 import { STYLE_INPUT } from '../replay/replayIndicator';
@@ -24,7 +24,7 @@ import {
 export interface PositionStyleOptions {
     workspace: VelaWorkspace;
     /** The mounted position indicator — the style reaches the chart through its input. */
-    indicator: IndicatorHandle;
+    indicator: VisualsSink;
 }
 
 /** Dropdown labels, and the values behind them. */

@@ -179,3 +179,114 @@ describe('the shared chart document', () => {
         expect(bot!.charts[0]!.rendererConfig).toEqual({ layout: { background: '#0b0d0e' } });
     });
 });
+
+describe('the Chart tab’s grid', () => {
+    const GRID: WorkspaceState = {
+        version: 1,
+        layout: '2h',
+        activeCellId: 'eth',
+        sync: { viewport: true },
+        trackSizes: { '2h': { cols: [1, 2] } },
+        charts: [
+            { id: 'btc', symbol: 'binance:BTCUSDT', timeframe: '60', rendererConfig: { grid: { vert: true } }, indicators: { manifest: ['EMA 20'], natives: ['volume', 'price-alerts'] } },
+            { id: 'eth', symbol: 'binance:ETHUSDT', timeframe: '15', rendererConfig: { grid: { vert: false } }, indicators: { manifest: ['RSI'], natives: ['volume', 'market-quote'] } },
+        ],
+    };
+
+    /** A stand-in grid workspace: the document it would write now, and what it was told to apply. */
+    function fakeGrid(state: WorkspaceState) {
+        const applied: WorkspaceState[] = [];
+        const ws = {
+            getState: () => state,
+            applyState: (next: unknown) => applied.push(next as WorkspaceState),
+        } as unknown as VelaWorkspace;
+        return { ws, applied };
+    }
+
+    it('keeps the whole grid for the Chart tab and shares only the first slot, as one chart', async () => {
+        const { shareChartDoc } = await load();
+        const chart = shareChartDoc('chart', CHART, { grid: true });
+        chart.storage.set('chart', encodeState(GRID));
+
+        const grid = decodeState(localStorage.getItem('midorii-chart-grid') ?? '')!;
+        expect(grid.layout).toBe('2h');
+        expect(grid.charts.map((c) => c.id)).toEqual(['btc', 'eth']);
+        // The app's own indicators are the controllers' to add, on every slot.
+        expect(grid.charts[0]!.indicators!.natives).toEqual(['volume']);
+        expect(grid.charts[1]!.indicators!.natives).toEqual(['volume']);
+
+        const shared = decodeState(localStorage.getItem('midorii-chart-doc') ?? '')!;
+        expect(shared.layout).toBe('1');
+        expect(shared.sync).toBeUndefined();
+        expect(shared.trackSizes).toBeUndefined();
+        expect(shared.activeCellId).toBeUndefined();
+        expect(shared.charts).toHaveLength(1);
+        expect(shared.charts[0]!.id).toBe('c1');
+        expect(shared.charts[0]!.rendererConfig).toEqual({ grid: { vert: true } });
+        expect(shared.charts[0]!.symbol).toBeUndefined();
+    });
+
+    it('does not tell the other modes about an edit to a later slot', async () => {
+        const { shareChartDoc } = await load();
+        const chart = shareChartDoc('chart', CHART, { grid: true });
+        const bot = shareChartDoc('bot', BOT);
+        const open = fakeWorkspace(BOT);
+        bot.attach(open.ws);
+        chart.storage.set('chart', encodeState(GRID));
+        expect(open.applied).toHaveLength(1);
+
+        const second = { ...GRID, charts: [GRID.charts[0]!, { ...GRID.charts[1]!, rendererConfig: { grid: { vert: true } } }] };
+        chart.storage.set('chart', encodeState(second));
+        expect(open.applied).toHaveLength(1);
+    });
+
+    it('lays an edit from another mode onto the first slot only, leaving the grid as it is', async () => {
+        const { shareChartDoc } = await load();
+        const chart = shareChartDoc('chart', CHART, { grid: true });
+        const bot = shareChartDoc('bot', BOT);
+        const open = fakeGrid(GRID);
+        chart.attach(open.ws);
+
+        bot.storage.set('bot', encodeState(doc({ ...BOT, rendererConfig: { grid: { vert: 'bot' } } })));
+
+        expect(open.applied).toHaveLength(1);
+        const next = open.applied[0]!;
+        expect(next.layout).toBe('2h');
+        expect(next.activeCellId).toBe('eth');
+        expect(next.sync).toEqual({ viewport: true });
+        expect(next.trackSizes).toEqual(GRID.trackSizes);
+        expect(next.charts.map((c) => c.id)).toEqual(['btc', 'eth']);
+        // Slot one: the shared look, under its own identity and market, app indicators intact.
+        expect(next.charts[0]!.rendererConfig).toEqual({ grid: { vert: 'bot' } });
+        expect(next.charts[0]!.symbol).toBe('binance:BTCUSDT');
+        expect(next.charts[0]!.timeframe).toBe('60');
+        expect(next.charts[0]!.indicators!.natives).toContain('price-alerts');
+        // Slot two is untouched.
+        expect(next.charts[1]).toEqual(GRID.charts[1]);
+    });
+
+    it('boots on its own grid, wearing whatever look the other modes left on the shared document', async () => {
+        const { shareChartDoc } = await load();
+        const first = shareChartDoc('chart', CHART, { grid: true });
+        first.storage.set('chart', encodeState(GRID));
+        const bot = shareChartDoc('bot', BOT);
+        bot.storage.set('bot', encodeState(doc({ ...BOT, rendererConfig: { layout: { background: '#202428' } } })));
+
+        const booted = decodeState((shareChartDoc('chart', CHART, { grid: true }).storage.get('chart') as string) ?? '')!;
+        expect(booted.layout).toBe('2h');
+        expect(booted.charts.map((c) => c.id)).toEqual(['btc', 'eth']);
+        expect(booted.charts[0]!.rendererConfig).toEqual({ layout: { background: '#202428' } });
+        expect(booted.charts[0]!.symbol).toBe('binance:BTCUSDT');
+        expect(booted.charts[1]!.symbol).toBe('binance:ETHUSDT');
+        expect(booted.charts[1]!.rendererConfig).toEqual({ grid: { vert: false } });
+    });
+
+    it('still boots a single chart from the shared document when no grid was ever saved', async () => {
+        const { shareChartDoc } = await load();
+        localStorage.setItem('midorii-chart-doc', encodeState(doc({ rendererConfig: { grid: { vert: false } } })));
+        const booted = decodeState((shareChartDoc('chart', CHART, { grid: true }).storage.get('chart') as string) ?? '')!;
+        expect(booted.layout).toBe('1');
+        expect(booted.charts[0]!.symbol).toBe(CHART.symbol);
+        expect(booted.charts[0]!.rendererConfig).toEqual({ grid: { vert: false } });
+    });
+});

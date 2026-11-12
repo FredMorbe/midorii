@@ -1,6 +1,5 @@
 import { injectStyles, overlayScrollbarCss } from '../../../src/ui';
 import { formatDuration } from '../../../src/core/drawings';
-import { LiveSession } from '../../../shared/engine/liveSession.js';
 import type {
     MidoriEquityPoint, MidoriRunStats, MidoriRunSummary, MidoriSweep, MidoriSweepSummary, MidoriTrade,
 } from '../midori';
@@ -11,10 +10,12 @@ import {
 } from '../runs/runViews';
 import { ensureSweepStyles, overfitNote, sweepTable, sweepsTable } from '../backtest/sweepViews';
 import { STRATEGIES, describeParams } from '../strategies';
+import { refreshResearchStrategies } from '../strategies/researchLibrary';
 import { loadPaperAccount } from '../trading/paperStore';
 import { loadJournal, summarizeJournal } from '../trading/liveJournal';
 import type { LiveTradeRecord } from '../trading/CapitalController';
-import type { PaperController } from '../trading/PaperController';
+import { PaperAccount, type PaperAccountExtra } from '../trading/PaperAccount';
+import { loadPaperSettings } from '../trading/paperSettings';
 import { tradeBreakdown } from './analysisFigures';
 
 /**
@@ -126,7 +127,7 @@ interface Subject {
 export interface AnalysisViewOptions {
     /** The paper account the chart is trading right now, or null. Read fresh on every
      *  refresh: switching Trade off between two visits changes the answer. */
-    liveAccount: () => PaperController | null;
+    liveAccount: () => PaperAccount | null;
 }
 
 export interface AnalysisViewHandle {
@@ -230,21 +231,21 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
      * enough to sum itself up: an account nobody is trading is still an account.
      */
     async function readLiveAccount(): Promise<Subject | null> {
-        const controller = opts.liveAccount();
-        if (controller) {
-            return accountSubject(
-                controller.symbol,
-                controller.session.result({ resolution: null }),
-                controller.stats(),
-                true,
-            );
+        const running = opts.liveAccount();
+        if (running) {
+            return accountSubject(running.title, running.result(), running.stats(), true);
         }
 
         const stored = await loadPaperAccount();
         if (!stored) return null;
-        const session = LiveSession.restore(stored.session);
-        const result = session.result({ resolution: null });
-        return accountSubject(stored.symbol, result, result.stats, false);
+        /* Picked back up just far enough to sum itself up. The settings are only what a market
+         * it has never been on would start from, which a read never asks for. */
+        const account = new PaperAccount({
+            settings: loadPaperSettings(),
+            restore: { symbol: stored.symbol, session: stored.session, extra: (stored.extra ?? null) as PaperAccountExtra | null },
+        });
+        const result = account.result();
+        return accountSubject(account.title, result, result.stats, false);
     }
 
     /** One paper account, live or picked back up, in the shape this screen reads. */
@@ -269,6 +270,7 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
 
     async function refresh(): Promise<void> {
         try {
+            await refreshResearchStrategies();
             const [runs, storedSweeps, account, trades] = await Promise.all([
                 window.midori.runs.list(),
                 window.midori.sweep.list(),

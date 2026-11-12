@@ -1,10 +1,12 @@
+import type { Vela } from '../../../src';
 import { registerWidgetAttachment } from '../../../src/plugin';
 
 /**
  * The price under the pointer, last time it was over the PRICE pane.
  *
- * Module-level rather than per-chart: Midorii mounts one chart at a time (see
- * `app/renderer/main.ts`, `layout: false`), so this mirrors exactly what
+ * Module-level rather than per-chart: a context menu only ever opens right after the
+ * pointer moved over the chart it belongs to, so the last reading IS the click's. This mirrors
+ * exactly what
  * `src/workspace/ChartCell.ts`'s own `lastCrossPrice` already does for the `alt+h`/
  * `alt+v` shortcuts — a right-click always follows a pointer move to that pixel, so the
  * last tracked price IS the click price by the time the context menu opens.
@@ -26,18 +28,24 @@ export function lastCrosshairTime(): number | null {
     return lastTime;
 }
 
-/** Track the crosshair's price on every mounted chart. Register once at startup. */
+/** Follow one chart's crosshair. A grid has one per cell, and the last pointer move on any
+ *  of them is the click a context menu is about to be opened from. */
+export function trackCrosshair(chart: Vela): () => void {
+    return chart.renderer.onCrosshairMove((e) => {
+        // A study pane's "price" is an indicator value, not a real price — ignore it
+        // rather than let it overwrite the last genuine price-pane reading.
+        if (e.paneKind === 'price') lastPrice = e.price;
+        // Every pane shares the time axis, so any of them answers which candle this is.
+        if (e.paneKind != null) lastTime = e.ohlc?.time ?? null;
+    });
+}
+
+/** Track the crosshair's price on every workspace's chart that is mounted when it is
+ *  registered (a replay's and the bot's among them). Register once at startup — the Chart
+ *  tab's other cells are followed by `installAlerts`, which sees them come and go. */
 export function installCursorPriceTracking(): () => void {
     return registerWidgetAttachment({
         id: 'midorii.alerts.cursor-price',
-        mount(ctx) {
-            return ctx.chart.renderer.onCrosshairMove((e) => {
-                // A study pane's "price" is an indicator value, not a real price — ignore it
-                // rather than let it overwrite the last genuine price-pane reading.
-                if (e.paneKind === 'price') lastPrice = e.price;
-                // Every pane shares the time axis, so any of them answers which candle this is.
-                if (e.paneKind != null) lastTime = e.ohlc?.time ?? null;
-            });
-        },
+        mount: (ctx) => trackCrosshair(ctx.chart),
     });
 }

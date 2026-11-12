@@ -6,7 +6,7 @@ import type {
     MidoriCapitalWorkingOrder,
 } from '../midori';
 import { capitalDealingRules, type CapitalDealing } from '../providers/CapitalProvider';
-import type { IndicatorHandle } from '../../../src';
+import type { VisualsSink } from './accountCharts';
 import type { ReplayVisualState } from '../replay/replayIndicator';
 import { STATE_INPUT } from '../replay/replayIndicator';
 import { venueBook, type TradeBook } from '../replay/tradeBook';
@@ -44,6 +44,10 @@ import { chime } from './fillChime';
 export type Notify = (message: string, kind: 'info' | 'error' | 'success') => void;
 
 export interface CapitalControllerOptions {
+    /** Bind bot instructions and reads to the connection explicitly armed at start. */
+    revision?: number;
+    /** Durable uncertainty must land before an entry reaches the venue. */
+    beforeEntry?: () => Promise<void>;
     /** The instrument this account trades, in Capital.com's own naming. */
     epic: string;
     /** How a late answer reaches the person who caused it. */
@@ -65,6 +69,8 @@ export interface CapitalControllerOptions {
     ownership?: MidoriBotCapitalOwnership;
     /** Persist a changed ownership set before the bot can forget what it opened. */
     onOwnershipChange?: (ownership: MidoriBotCapitalOwnership) => void;
+    /** No fill or close sound. For an account nobody is sitting at — a bot's. */
+    silent?: boolean;
 }
 
 /** One finished trade, as the journal keeps it. */
@@ -151,6 +157,7 @@ export class CapitalController implements TradingController {
      *  that can only be built once the chart it sits on exists. */
     onChange: (() => void) | null;
     private readonly isLive: boolean;
+    private readonly silent: boolean;
     private readonly ownership: {
         initialized: boolean;
         positions: Set<string>;
@@ -204,26 +211,36 @@ export class CapitalController implements TradingController {
     /** When the last reconcile SUCCEEDED, and whether the one after it failed. */
     private lastReadAt = 0;
     private stale = false;
+    private hedgingMode = false;
     /** `dealId` → the number the chart knows it by, kept for the life of the position. */
     private readonly ids = new Map<string, number>();
     /** The same, for resting orders — a separate space, because the venue's two books have
      *  separate ids and the chart must never address one with the other's number. */
     private readonly orderIds = new Map<string, number>();
     private nextId = 1;
-    private indicator: IndicatorHandle | null = null;
+    private indicator: VisualsSink | null = null;
     private timer: ReturnType<typeof setInterval> | null = null;
     /** One reconcile at a time — a slow answer must not overlap the next request. */
     private reconciling = false;
     /** Venue instructions still waiting for a confirmation and their following account
      *  read. A bot shutdown waits for these so an accepted deal id can be persisted. */
     private readonly pendingActions = new Set<Promise<void>>();
+    private readonly revision: number | undefined;
+    private readonly beforeEntry: (() => Promise<void>) | undefined;
+    private readonly ownedAccountId: string | undefined;
+    private readonly ownedEnvironment: 'demo' | 'live' | undefined;
 
     constructor(opts: CapitalControllerOptions) {
+        this.revision = opts.revision;
+        this.beforeEntry = opts.beforeEntry;
+        this.ownedAccountId = opts.ownership?.accountId;
+        this.ownedEnvironment = opts.ownership?.environment;
         this.epic = opts.epic.toUpperCase();
         this.notify = opts.notify;
         this.onChange = opts.onChange ?? null;
         this.dealing = opts.dealing ?? null;
         this.isLive = opts.live === true;
+        this.silent = opts.silent === true;
         this.onTradeClosed = opts.onTradeClosed ?? null;
         this.ownership = opts.ownership ? {
             initialized: opts.ownership.initialized,
@@ -351,23 +368,50 @@ export class CapitalController implements TradingController {
         if (ask > 0) this.lastAsk = ask;
     }
 
-    order(spec: OrderSpec): void {
+    order(spec: OrderSpec, created?: (confirmation: MidoriCapitalConfirmation) => void): void {
+        if (spec.reduceOnly) {
+            const position = this.live.find((p) => (
+                (spec.positionId == null || p.id === spec.positionId)
+                && (spec.side === 'sell' ? p.size > 0 : p.size < 0)
+            ));
+            if (!position || (spec.type != null && spec.type !== 'market')
+                || !Number.isFinite(spec.size) || Math.abs(position.size) !== spec.size) {
+                throw new Error('Capital.com supports only a full market reduce-only close; partial or resting reductions are refused.');
+            }
+            this.closeOne(position.id);
+            return;
+        }
         if (this.ownership?.uncertain) {
             throw new Error(
                 'This bot has an order whose outcome could not be identified. Check the venue account '
                 + 'and restart the bot only after the market has no ambiguous exposure.',
             );
         }
-        if (this.ownership && (this.lastReadAt === 0 || this.stale)) {
+        if (this.ownership && (this.lastReadAt === 0 || this.stale || Date.now() - this.lastReadAt > 15_000)) {
             throw new Error(
                 'The Capital.com account state is not current. The bot will not open another '
                 + 'trade until positions, orders, and available funds can be read safely.',
             );
         }
+        if (this.ownership && (this.pendingActions.size > 0
+            || this.ownership.positions.size > this.live.length
+            || this.ownership.orders.size > this.resting.length)) {
+            throw new Error('A bot instruction is still being reconciled. No new entry is sent before its exposure is visible.');
+        }
+        if (this.ownership && !this.hedgingMode) throw new Error('Capital.com bots require hedging mode. Enable it at the venue before starting the bot.');
         this.requireOpenMarket();
+        if (this.beforeEntry) {
+            const stop = spec.bracket?.stopLoss;
+            const reference = spec.type === 'limit' ? spec.limitPrice : spec.type === 'stop' ? spec.stopPrice
+                : spec.side === 'buy' ? this.lastAsk : this.lastBid;
+            if (!Number.isFinite(stop) || !(stop! > 0) || !Number.isFinite(reference) || !(reference! > 0)
+                || (spec.side === 'buy' ? stop! >= reference! : stop! <= reference!)) {
+                throw new Error('Capital.com bot entries require a valid protective stop on the loss side of the entry.');
+            }
+        }
         const size = this.venueSize(spec.size);
         if (spec.type === 'limit' || spec.type === 'stop') {
-            this.rest(spec, size);
+            this.rest(spec, size, created);
             return;
         }
         const payload = {
@@ -385,11 +429,16 @@ export class CapitalController implements TradingController {
          * closes before Capital.com answers, the next start must inspect the venue instead
          * of trusting an empty ownership set and orphaning a position that may have opened. */
         this.markOwnershipUncertain();
+        let dispatched = false;
         this.submit(
-            () => window.midori.capital.openPosition(payload),
+            async () => {
+                await this.beforeEntry?.();
+                dispatched = true;
+                return window.midori.capital.openPosition(payload, this.revision);
+            },
             what,
-            (confirmation) => this.resolveCreatedDeal(confirmation, 'position'),
-            () => this.markOwnershipUncertain(),
+            (confirmation) => { this.resolveCreatedDeal(confirmation, 'position'); created?.(confirmation); },
+            () => this.settleUnknownCreate(dispatched),
         );
     }
 
@@ -402,7 +451,7 @@ export class CapitalController implements TradingController {
      * from the last price would disagree with that check the moment the market moved between
      * the two.
      */
-    private rest(spec: OrderSpec, size: number): void {
+    private rest(spec: OrderSpec, size: number, created?: (confirmation: MidoriCapitalConfirmation) => void): void {
         const level = spec.type === 'limit' ? spec.limitPrice : spec.stopPrice;
         if (level == null || !(level > 0)) throw new Error('A resting order needs a price to wait at.');
         const payload = {
@@ -416,11 +465,16 @@ export class CapitalController implements TradingController {
         };
         const what = `Resting a ${spec.side} ${spec.type} for ${size} at ${level}`;
         this.markOwnershipUncertain();
+        let dispatched = false;
         this.submit(
-            () => window.midori.capital.createOrder(payload),
+            async () => {
+                await this.beforeEntry?.();
+                dispatched = true;
+                return window.midori.capital.createOrder(payload, this.revision);
+            },
             what,
-            (confirmation) => this.resolveCreatedDeal(confirmation, 'order'),
-            () => this.markOwnershipUncertain(),
+            (confirmation) => { this.resolveCreatedDeal(confirmation, 'order'); created?.(confirmation); },
+            () => this.settleUnknownCreate(dispatched),
         );
     }
 
@@ -437,7 +491,7 @@ export class CapitalController implements TradingController {
         if (!order) throw new Error('That order is no longer working — it may have filled or been cancelled.');
         this.requireOpenMarket();
         this.submit(
-            () => window.midori.capital.amendOrder({ dealId: order.dealId, level: price }),
+            () => window.midori.capital.amendOrder({ dealId: order.dealId, level: price }, this.revision),
             'Moving the order',
         );
     }
@@ -446,7 +500,7 @@ export class CapitalController implements TradingController {
         const order = this.resting.find((o) => o.id === orderId);
         if (!order) throw new Error('That order is no longer on the book.');
         this.submit(
-            () => window.midori.capital.cancelOrder(order.dealId),
+            () => window.midori.capital.cancelOrder(order.dealId, this.revision),
             'Cancelling the order',
             (confirmation) => {
                 if (confirmation.accepted) this.forgetWorkingOrder(order.dealId);
@@ -454,11 +508,31 @@ export class CapitalController implements TradingController {
         );
     }
 
+    /** Cancel the exact confirmed id, including before the next book read exposes it. */
+    cancelWorkingDeal(dealId: string, complete?: () => void): void {
+        if (!this.ownership?.orders.has(dealId) && !this.resting.some((o) => o.dealId === dealId)) {
+            throw new Error('This working order is not owned by this account controller.');
+        }
+        this.submit(
+            () => window.midori.capital.cancelOrder(dealId, this.revision),
+            'Cancelling the order',
+            (confirmation) => {
+                if (confirmation.accepted) this.forgetWorkingOrder(dealId);
+                complete?.();
+            },
+            complete,
+        );
+    }
+
+    hasWorkingDeal(dealId: string): boolean {
+        return this.ownership?.orders.has(dealId) === true || this.resting.some((o) => o.dealId === dealId);
+    }
+
     /** Take every resting order off the book. Open positions are untouched. */
     cancelAll(): void {
         for (const order of this.resting) {
             this.submit(
-                () => window.midori.capital.cancelOrder(order.dealId),
+                () => window.midori.capital.cancelOrder(order.dealId, this.revision),
                 'Cancelling the order',
                 (confirmation) => {
                     if (confirmation.accepted) this.forgetWorkingOrder(order.dealId);
@@ -490,7 +564,10 @@ export class CapitalController implements TradingController {
      *
      * Two ways to know it, and nothing else counts as knowing.
      *
-     * A position that has MOVED states it exactly: the venue's own unrealized figure divided by
+     * Bots use only the stated lot value in matching account currency. Profit-derived
+     * estimates can include financing and must not determine automated risk sizing.
+     *
+     * For chart estimates, a position that has MOVED states it approximately: the venue's own unrealized figure divided by
      * the distance travelled is the factor, and it already carries whatever conversion the
      * venue applied. That is the best answer and it wins.
      *
@@ -502,10 +579,10 @@ export class CapitalController implements TradingController {
      * until the first position teaches it the real factor.
      */
     pointValue(): number | null {
-        if (this.learnedPerPoint != null) return this.learnedPerPoint;
+        if (!this.ownership && this.learnedPerPoint != null) return this.learnedPerPoint;
         const lot = this.dealing?.lotSize;
         const instrument = this.dealing?.currency;
-        if (lot == null || !(lot > 0) || instrument == null || this.accountCcy == null) return null;
+        if (lot == null || !Number.isFinite(lot) || !(lot > 0) || instrument == null || this.accountCcy == null) return null;
         return instrument.toUpperCase() === this.accountCcy.toUpperCase() ? lot : null;
     }
 
@@ -587,7 +664,7 @@ export class CapitalController implements TradingController {
                 );
             }
             this.submit(
-                () => window.midori.capital.amendPosition({ dealId, trailingStop: true, stopDistance, profitLevel }),
+                () => window.midori.capital.amendPosition({ dealId, trailingStop: true, stopDistance, profitLevel }, this.revision),
                 'Moving the level',
             );
             return;
@@ -600,7 +677,7 @@ export class CapitalController implements TradingController {
                 profitLevel,
                 // A level set on a trailing stop fixes it there, and says so to the venue.
                 ...(position.trailing ? { trailingStop: false } : {}),
-            }),
+            }, this.revision),
             'Moving the level',
             (confirmation) => {
                 if (confirmation.accepted && 'stopLoss' in levels) this.trailDistances.delete(dealId);
@@ -626,7 +703,7 @@ export class CapitalController implements TradingController {
                 trailingStop: true,
                 stopDistance: distance,
                 profitLevel: position.takeProfit,
-            }),
+            }, this.revision),
             'Trailing the stop',
             (confirmation) => {
                 if (confirmation.accepted) this.trailDistances.set(dealId, distance);
@@ -668,7 +745,7 @@ export class CapitalController implements TradingController {
         if (!position) throw new Error('That position is no longer open.');
         const dealId = position.dealId;
         this.submit(
-            () => window.midori.capital.closePosition(dealId),
+            () => window.midori.capital.closePosition(dealId, this.revision),
             'Closing the position',
             /* The fill the venue reports back, kept for the journal: this is the one exit
              * price that is a fact rather than an estimate, and it exists only here. */
@@ -688,7 +765,7 @@ export class CapitalController implements TradingController {
     }
 
     /** Hand over the native indicator that draws this account's positions. */
-    attachIndicator(handle: IndicatorHandle): void {
+    attachIndicator(handle: VisualsSink): void {
         this.indicator = handle;
         this.pushState();
     }
@@ -769,7 +846,8 @@ export class CapitalController implements TradingController {
         if (this.reconciling) return this.lastReadAt > 0 && !this.stale;
         this.reconciling = true;
         try {
-            const [account, positions, working, market] = await Promise.all([
+            if (this.revision != null) await this.requireConnection();
+            const [account, positions, working, market, preferences] = await Promise.all([
                 window.midori.capital.account(),
                 window.midori.capital.positions(),
                 window.midori.capital.workingOrders(),
@@ -777,7 +855,40 @@ export class CapitalController implements TradingController {
                  * this is the one field there that CHANGES — forex shuts on Friday evening —
                  * and a cached "TRADEABLE" is exactly the answer that would be wrong. */
                 window.midori.capital.marketInfo(this.epic).catch(() => null),
+                this.ownership ? window.midori.capital.preferences() : Promise.resolve(null),
             ]);
+            if (this.ownedAccountId && account?.accountId !== this.ownedAccountId) {
+                throw new Error('The Capital.com trading account changed. This bot cannot manage the new account.');
+            }
+            if (this.revision != null) await this.requireConnection();
+            if (this.ownership) {
+                if (!account || ![account.balance?.balance, account.balance?.profitLoss, account.balance?.available].every(Number.isFinite) || !account.currency) {
+                    throw new Error('The Capital.com account returned invalid funds or currency. Entries are blocked.');
+                }
+                this.hedgingMode = preferences?.hedgingMode === true;
+                if (!this.hedgingMode) throw new Error('Capital.com bots require hedging mode. Enable it at the venue before starting the bot.');
+                if (!market?.snapshot?.marketStatus) {
+                    throw new Error('The Capital.com market state is unavailable. Entries are blocked.');
+                }
+            }
+            if (!Array.isArray(positions) || !Array.isArray(working)
+                || positions.some(row => typeof row?.position?.dealId !== 'string' || !row.position.dealId
+                    || typeof row.market?.epic !== 'string' || !row.market.epic
+                    || !['BUY', 'SELL'].includes(row.position.direction)
+                    || !Number.isFinite(row.position.size) || row.position.size <= 0
+                    || !Number.isFinite(row.position.level) || row.position.level <= 0
+                    || !Number.isFinite(row.market.bid) || !Number.isFinite(row.market.offer)
+                    || row.market.bid <= 0 || row.market.offer < row.market.bid)
+                || working.some(row => typeof row?.workingOrderData?.dealId !== 'string' || !row.workingOrderData.dealId
+                    || typeof row.workingOrderData.epic !== 'string' || !row.workingOrderData.epic
+                    || !['BUY', 'SELL'].includes(row.workingOrderData.direction)
+                    || !['LIMIT', 'STOP'].includes(row.workingOrderData.orderType)
+                    || !Number.isFinite(row.workingOrderData.orderSize) || row.workingOrderData.orderSize <= 0
+                    || !Number.isFinite(row.workingOrderData.orderLevel) || row.workingOrderData.orderLevel <= 0)
+                || new Set(positions.map(row => row.position.dealId)).size !== positions.length
+                || new Set(working.map(row => row.workingOrderData.dealId)).size !== working.length) {
+                throw new Error('Capital.com returned an invalid exposure snapshot. Ownership is unchanged and entries are blocked.');
+            }
             if (account) {
                 this.balance = account.balance.balance + account.balance.profitLoss;
                 this.availableMargin = account.balance.available;
@@ -821,10 +932,10 @@ export class CapitalController implements TradingController {
              * missing from a journal that only wrote down what it had asked for. */
             /* A deal id that was not there at the last read is a fill, wherever it came from.
              * The first read is the state of the account, not news. */
-            if (!firstRead && this.live.some((p) => !before.some((b) => b.dealId === p.dealId))) chime('fill');
+            if (!firstRead && !this.silent && this.live.some((p) => !before.some((b) => b.dealId === p.dealId))) chime('fill');
             for (const gone of before) {
                 if (open.has(gone.dealId)) continue;
-                chime('close');
+                if (!this.silent) chime('close');
                 this.trailDistances.delete(gone.dealId);
                 this.record(gone);
                 if (this.ownership?.positions.delete(gone.dealId)) ownershipChanged = true;
@@ -850,15 +961,9 @@ export class CapitalController implements TradingController {
             const waiting = new Set(this.resting.map((o) => o.dealId));
             for (const dealId of waiting) this.seenOwnedOrders.add(dealId);
             for (const dealId of this.orderIds.keys()) if (!waiting.has(dealId)) this.orderIds.delete(dealId);
-            if (this.ownership) {
-                for (const dealId of [...this.ownership.orders]) {
-                    if (this.seenOwnedOrders.has(dealId) && !waiting.has(dealId)) {
-                        this.ownership.orders.delete(dealId);
-                        this.seenOwnedOrders.delete(dealId);
-                        ownershipChanged = true;
-                    }
-                }
-            }
+            /* The two endpoint reads are not atomic: a fill can disappear from the order
+             * snapshot before its position appears. Keep the source id until a linked fill
+             * or confirmed cancellation resolves it; missing exposure blocks new entries. */
             if (ownershipChanged) this.publishOwnership();
 
             if (market?.snapshot) {
@@ -994,6 +1099,7 @@ export class CapitalController implements TradingController {
         onUnknownOutcome?: () => void,
     ): Promise<void> {
         try {
+            if (this.revision != null) await this.requireConnection();
             const confirmation = await run();
             observe?.(confirmation);
             if (!confirmation.accepted) {
@@ -1013,6 +1119,13 @@ export class CapitalController implements TradingController {
         await this.reconcile();
     }
 
+    private async requireConnection(): Promise<void> {
+        const environment = await window.midori.capital.environment();
+        if (!environment.configured || environment.revision !== this.revision || environment.env !== this.ownedEnvironment) {
+            throw new Error('The Capital.com connection changed. Stop and explicitly restart this bot on the current account.');
+        }
+    }
+
     /** Track one venue instruction so a bot can wait for all delivered work before its
      *  runtime state is considered safely stored. */
     private submit(
@@ -1027,6 +1140,11 @@ export class CapitalController implements TradingController {
             () => this.pendingActions.delete(action),
             () => this.pendingActions.delete(action),
         );
+    }
+
+    /** Whether an instruction is still waiting for its verdict and the read that follows. */
+    get busy(): boolean {
+        return this.pendingActions.size > 0;
     }
 
     /** Wait until every instruction already sent has received its verdict and the venue
@@ -1071,6 +1189,25 @@ export class CapitalController implements TradingController {
     }
 
     /**
+     * A create ended without a verdict.
+     *
+     * Only a request that was handed to the venue client can have opened anything. One that
+     * failed before that — the connection check, or the durable write that has to land
+     * first — provably sent nothing, and the uncertainty recorded ahead of it is taken back.
+     * `order` refuses while an earlier uncertainty stands, so the flag cleared here is
+     * always this create's own.
+     */
+    private settleUnknownCreate(dispatched: boolean): void {
+        if (dispatched) {
+            this.markOwnershipUncertain();
+            return;
+        }
+        if (!this.ownership?.uncertain) return;
+        this.ownership.uncertain = false;
+        this.publishOwnership();
+    }
+
+    /**
      * What one point of movement is worth on this position, in the ACCOUNT's money.
      *
      * Read off the venue's own arithmetic rather than computed. `upl` is what Capital.com
@@ -1102,7 +1239,8 @@ export class CapitalController implements TradingController {
     private learnPerPoint(p: LivePosition): void {
         const drift = p.exitPrice - p.entryPrice;
         if (p.exitPrice > 0 && p.upl !== 0 && Math.abs(drift) > p.entryPrice * 1e-5) {
-            this.learnedPerPoint = p.upl / (drift * p.size);
+            const factor = p.upl / (drift * p.size);
+            if (Number.isFinite(factor) && factor > 0) this.learnedPerPoint = factor;
         }
     }
 
@@ -1119,6 +1257,8 @@ export class CapitalController implements TradingController {
     private publishOwnership(): void {
         if (!this.ownership || !this.onOwnershipChange) return;
         this.onOwnershipChange({
+            ...(this.ownedAccountId ? { accountId: this.ownedAccountId } : {}),
+            ...(this.ownedEnvironment ? { environment: this.ownedEnvironment } : {}),
             initialized: this.ownership.initialized,
             positionDealIds: [...this.ownership.positions],
             workingOrderDealIds: [...this.ownership.orders],
@@ -1140,7 +1280,7 @@ export class CapitalController implements TradingController {
         let out = size;
         if (step != null && step > 0) {
             // Eight decimals clears the dust a divide-and-multiply leaves behind.
-            out = Number((Math.round(size / step) * step).toFixed(8));
+            out = Number(((this.ownership ? Math.floor(size / step + 1e-10) : Math.round(size / step)) * step).toFixed(8));
         }
         if (min != null && out < min) {
             throw new Error(
@@ -1148,7 +1288,7 @@ export class CapitalController implements TradingController {
                 + 'Raise the risk per trade, or move the stop closer, until the size reaches it.',
             );
         }
-        if (!(out > 0)) throw new Error('That sizes to nothing.');
+        if (!Number.isFinite(out) || !(out > 0)) throw new Error('That sizes to nothing or is not finite.');
         const max = this.dealing?.maxSize;
         if (max != null && out > max) {
             throw new Error(`${out} is above the largest deal this instrument accepts (${max}).`);

@@ -3,7 +3,7 @@ import type { LiveBar } from '../../../shared/engine/liveSession.js';
 import type { Broker, Order, OrderSpec, ProtectionLevels } from '../../../shared/engine/broker.js';
 import type { RunStats } from '../../../shared/engine/summary.js';
 import type { LiveResult } from '../../../shared/engine/liveSession.js';
-import type { IndicatorHandle } from '../../../src';
+import type { VisualsSink } from './accountCharts';
 import { accountFigures, type AccountFigures } from '../replay/accountFigures';
 import { tradeBook, tradeHistory, type ClosedTrade, type HistoryRow, type TradeBook } from '../replay/tradeBook';
 import { STATE_INPUT } from '../replay/replayIndicator';
@@ -65,12 +65,17 @@ export interface PaperControllerOptions {
     onPersist?: () => void;
     /** Play the fill sound on a fill and a close. Off for an account nobody is watching. */
     chime?: boolean;
+    /**
+     * What the whole account is worth, when this controller is one instrument of a larger one.
+     * Sizing a trade is measured against the account, not against this instrument's own books.
+     */
+    accountEquity?: () => number;
 }
 
 export class PaperController implements TradingController {
     readonly session: LiveSession;
     private boundSymbol: string;
-    private indicator: IndicatorHandle | null = null;
+    private indicator: VisualsSink | null = null;
     /** Why trading is refused right now, or null. Set when the chart wanders off. */
     private away: string | null = null;
     /** See {@link stats} and {@link history} — both are read on every repaint. */
@@ -81,6 +86,7 @@ export class PaperController implements TradingController {
     /** How many fills a restored account arrived with — see {@link markFills}. */
     private readonly inheritedFills: number;
     private readonly chimes: boolean;
+    private readonly accountEquity: (() => number) | null;
     /** The fill and trade counts the sound was last decided at. */
     private heardFills: number;
     private heardTrades: number;
@@ -110,6 +116,7 @@ export class PaperController implements TradingController {
         const stamped = this.session.broker.fills.findIndex((f) => (f as { symbol?: string }).symbol != null);
         this.inheritedFills = stamped === -1 ? this.session.broker.fills.length : stamped;
         this.chimes = opts.chime === true;
+        this.accountEquity = opts.accountEquity ?? null;
         this.heardFills = this.session.broker.fills.length;
         this.heardTrades = this.session.broker.trades.length;
     }
@@ -126,6 +133,7 @@ export class PaperController implements TradingController {
         this.session.broker.setPointValue(pointValue != null && pointValue > 0 ? pointValue : 1);
         this.sizeStep = instrument?.sizeStep != null && instrument.sizeStep > 0 ? instrument.sizeStep : null;
         this.minSize = instrument?.minSize != null && instrument.minSize > 0 ? instrument.minSize : null;
+        this.session.broker.setSizeGrid(this.sizeStep, this.minSize);
         this.pushState();
     }
 
@@ -180,6 +188,7 @@ export class PaperController implements TradingController {
 
     /** What the account is worth. Its own computation — this account IS the engine. */
     equity(): number {
+        if (this.accountEquity) return this.accountEquity();
         return this.session.broker.equity;
     }
 
@@ -266,7 +275,7 @@ export class PaperController implements TradingController {
      * Hand over the native indicator that draws this account's positions and orders.
      * Optional: without it the account still trades, just unpainted.
      */
-    attachIndicator(handle: IndicatorHandle): void {
+    attachIndicator(handle: VisualsSink): void {
         this.indicator = handle;
         this.pushState();
     }

@@ -90,89 +90,163 @@ export function paperAccount(controller: PaperController): BotAccount {
     };
 }
 
-/**
- * A real Capital.com account, behind the same shape.
- *
- * Two things here are honest rather than convenient, and both are visible in the code:
- *
- * The ids are the bot's own. The venue gives an order an id only once it has accepted it,
- * which is after this call has returned — so a strategy that stored the id it was handed
- * would be holding a number for something that may never exist. The bot issues its own,
- * remembers what it asked for, and resolves it against the venue's book when the order
- * turns up there. An order that never turned up cannot be cancelled, and saying so is the
- * only truthful answer.
- *
- * The match is by side, kind and level. That is enough because a strategy places at most
- * one order per level per setup — the ones in this app place exactly one per session — and
- * a wrong match would have to be an order the bot itself placed at the same price, on the
- * same side, of the same kind. Where nothing matches, `cancel` answers false rather than
- * cancelling something else.
- */
-export function liveAccount(controller: CapitalController): BotAccount {
-    /** What the bot asked for, by the id it handed the strategy. Only resting orders are
-     *  kept — a market order has nothing to cancel. */
-    const asked = new Map<number, { side: 'buy' | 'sell'; kind: 'limit' | 'stop'; level: number }>();
-    let nextId = 1;
+/** A live account, plus the binding between the bot's order ids and the venue's. */
+export interface LiveBotAccount extends BotAccount {
+    /** Every order id that is bound to a venue deal id, for a strategy state stored with it. */
+    orderIds(): Array<[number, string]>;
+}
 
-    /** The venue's order for what the bot asked for under `id`, or null. */
-    const resolve = (id: number): number | null => {
-        const want = asked.get(id);
-        if (!want) return null;
-        /* Levels come back from the venue as it stores them, which is not always bit-exact
-         * with what was sent. A tolerance of a ten-thousandth of the level is far tighter
-         * than any instrument's own tick and far looser than float noise. */
-        const tolerance = Math.max(Math.abs(want.level) * 1e-4, 1e-8);
-        const match = controller.orders().find((o) => (
-            o.side === want.side && o.kind === want.kind && Math.abs(o.price - want.level) <= tolerance
-        ));
-        return match ? match.id : null;
+/**
+ * A strategy keeps its own order ids; only a dealing confirmation binds them to venue ids.
+ *
+ * `restored` is that binding from before a restart. A strategy state that survived the
+ * restart names orders by the ids it was given then, so a working order found on the book
+ * under one of those deal ids keeps its id instead of being issued a new one. `onBound` is
+ * told when a new binding exists, so it can be stored before the next bar closes.
+ */
+export function liveAccount(
+    controller: CapitalController,
+    restored: ReadonlyArray<[number, string]> = [],
+    onBound?: () => void,
+): LiveBotAccount {
+    const asked = new Map<number, { spec: OrderSpec; dealId: string | null; cancelRequested: boolean }>();
+    const kept = new Map(restored.map(([id, dealId]) => [dealId, id]));
+    let nextId = restored.reduce((next, [id]) => Math.max(next, id + 1), 1);
+
+    const pending = (): BotOrder[] => {
+        for (const [id, order] of asked) {
+            if (order.dealId != null && !controller.hasWorkingDeal(order.dealId)) asked.delete(id);
+        }
+        const rows: BotOrder[] = controller.orders().map((row) => {
+            let pair = [...asked].find(([, order]) => order.dealId === row.dealId);
+            if (!pair) {
+                const id = kept.get(row.dealId) ?? nextId++;
+                const spec: OrderSpec = { side: row.side, size: row.size, type: row.kind,
+                    ...(row.kind === 'limit' ? { limitPrice: row.price } : { stopPrice: row.price }) };
+                const order = { spec, dealId: row.dealId, cancelRequested: false };
+                asked.set(id, order);
+                pair = [id, order];
+            }
+            return { ...pair[1].spec, id: pair[0], size: row.size,
+                type: row.kind, limitPrice: row.kind === 'limit' ? row.price : null,
+                stopPrice: row.kind === 'stop' ? row.price : null };
+        });
+        for (const [id, order] of asked) {
+            if (!rows.some(row => row.id === id)) rows.push({ ...order.spec, id });
+        }
+        return rows;
+    };
+
+    const requestCancel = (order: { dealId: string | null; cancelRequested: boolean }): void => {
+        order.cancelRequested = true;
+        try {
+            controller.cancelWorkingDeal(order.dealId!, () => { order.cancelRequested = false; });
+        } catch (error) {
+            order.cancelRequested = false;
+            throw error;
+        }
+    };
+
+    const cancel = (id: number): boolean => {
+        // An order from before a restart is only known once the book has been read.
+        if (!asked.has(id)) pending();
+        const order = asked.get(id);
+        if (!order || order.cancelRequested) return false;
+        if (order.dealId != null && !controller.hasWorkingDeal(order.dealId)) {
+            asked.delete(id);
+            return false;
+        }
+        if (order.dealId == null) {
+            order.cancelRequested = true;
+            return true;
+        }
+        requestCancel(order);
+        return true;
     };
 
     return {
         equity: () => controller.equity(),
-        // The venue states one figure and does not split settled from unrealized.
         balance: () => controller.equity(),
         price: () => controller.price(),
         quote: () => controller.quote(),
         positions: () => controller.positions(),
-        pending: () => controller.orders().map((o) => ({
-            id: o.id,
-            side: o.side,
-            size: o.size,
-            type: o.kind,
-            limitPrice: o.kind === 'limit' ? o.price : null,
-            stopPrice: o.kind === 'stop' ? o.price : null,
-        })),
-        order: (spec) => {
-            controller.order(spec);
-            const id = nextId;
-            nextId += 1;
-            if (spec.type === 'limit' || spec.type === 'stop') {
-                const level = spec.type === 'limit' ? spec.limitPrice : spec.stopPrice;
-                if (level != null) asked.set(id, { side: spec.side, kind: spec.type, level });
+        pending,
+        orderIds: () => {
+            pending();
+            const bound: Array<[number, string]> = [];
+            for (const [id, order] of asked) if (order.dealId != null) bound.push([id, order.dealId]);
+            return bound;
+        },
+        order: (requested) => {
+            const spec = requested.reduceOnly ? requested : withLevels(requested, controller.quote());
+            const id = nextId++;
+            const resting = spec.type === 'limit' || spec.type === 'stop';
+            if (resting) asked.set(id, { spec: { ...spec }, dealId: null, cancelRequested: false });
+            try {
+                controller.order(spec, (confirmation) => {
+                    const order = asked.get(id);
+                    if (!order) return;
+                    if (!confirmation.accepted) { asked.delete(id); return; }
+                    if (!confirmation.dealId) return;
+                    order.dealId = confirmation.dealId;
+                    onBound?.();
+                    if (order.cancelRequested) requestCancel(order);
+                });
+            } catch (error) {
+                asked.delete(id);
+                throw error;
             }
             return { id };
         },
-        cancel: (id) => {
-            const venueId = resolve(id);
-            asked.delete(id);
-            if (venueId == null) return false;
-            controller.cancelOrder(venueId);
-            return true;
-        },
-        cancelAll: () => {
-            const count = controller.orders().length;
-            controller.cancelAll();
-            asked.clear();
-            return count;
+        cancel,
+        cancelAll: (tag) => {
+            const ids = pending().filter((order) => tag == null || order.tag === tag).map((order) => order.id);
+            return ids.reduce((count, id) => count + (cancel(id) ? 1 : 0), 0);
         },
         close: () => {
             for (const position of controller.positions()) controller.closeOne(position.id);
         },
         flatten: () => {
-            controller.cancelAll();
-            asked.clear();
-            for (const position of controller.positions()) controller.closeOne(position.id);
+            pending();
+            /* Every cancel and every close is attempted. One that cannot be sent must not
+             * leave the rest of the book standing; the first failure is reported after. */
+            const failures: unknown[] = [];
+            const attempt = (run: () => void): void => {
+                try { run(); } catch (error) { failures.push(error); }
+            };
+            for (const id of [...asked.keys()]) attempt(() => cancel(id));
+            for (const position of controller.positions()) attempt(() => controller.closeOne(position.id));
+            if (failures.length > 0) throw failures[0];
+        },
+    };
+}
+
+/**
+ * State a bracket's distances as levels, which is the only form this venue is sent.
+ *
+ * A strategy may measure its stop from the fill. The venue attaches protection to the
+ * opening request, before there is a fill, so the distance is measured from the price the
+ * order is expected to trade at: its own level for a resting order, the side of the quote
+ * it will cross for a market one. Slippage between that price and the fill moves the risk
+ * by the same amount, which a stop attached afterwards would not avoid either.
+ */
+function withLevels(spec: OrderSpec, quote: { bid: number; ask: number } | null): OrderSpec {
+    const bracket = spec.bracket;
+    if (!bracket || (bracket.stopDistance == null && bracket.targetDistance == null)) return spec;
+    const reference = spec.type === 'limit' ? spec.limitPrice
+        : spec.type === 'stop' ? spec.stopPrice
+        : spec.side === 'buy' ? quote?.ask : quote?.bid;
+    if (reference == null || !Number.isFinite(reference) || !(reference > 0)) {
+        throw new Error('There is no current price to measure the stop distance from.');
+    }
+    const direction = spec.side === 'buy' ? 1 : -1;
+    const { stopDistance, targetDistance, ...levels } = bracket;
+    return {
+        ...spec,
+        bracket: {
+            ...levels,
+            ...(stopDistance != null ? { stopLoss: reference - direction * stopDistance } : {}),
+            ...(targetDistance != null ? { takeProfit: reference + direction * targetDistance } : {}),
         },
     };
 }

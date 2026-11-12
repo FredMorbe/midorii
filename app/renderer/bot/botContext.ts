@@ -33,9 +33,10 @@ import type { BotAccount } from './botAccount';
  *    what they mean in a backtest. On a live venue they are issued here and matched to the
  *    venue's book later — see botAccount.ts, where that is done and argued.
  *
- * Nothing here refuses a trade. The guards do that, before this is ever called, and the
+ * Nothing here decides to refuse a trade. The guards and the account do that, and the
  * separation is deliberate: this file's job is to be faithful to the backtest, and a
- * context that quietly dropped orders would be the opposite of faithful.
+ * context that quietly dropped orders would be the opposite of faithful. A refused entry
+ * is always reported through `onRefused`.
  */
 
 export interface BotContextOptions {
@@ -49,6 +50,10 @@ export interface BotContextOptions {
     account: BotAccount;
     /** The strategy's own store, kept by the runner so it survives a rebuild. */
     state: Record<string, unknown>;
+    /** Strategies size in price units; a futures contract can be worth several per point. */
+    pointValue?: number;
+    /** Round the resulting account size onto the instrument's tradeable grid. */
+    sizeOnGrid?: (size: number) => number;
     /** Told about every order the strategy places — what the bot's log is written from. */
     onOrder?: (spec: OrderSpec, id: number) => void;
     /**
@@ -78,6 +83,7 @@ export interface BotContextOptions {
  */
 export function botContext(opts: BotContextOptions): BacktestContext<StrategyParams> {
     const { bars, index, strategy, account, state } = opts;
+    const pointValue = opts.pointValue ?? 1;
     const series = strategy.series ?? {};
     const seriesNames = Object.keys(series);
 
@@ -95,7 +101,9 @@ export function botContext(opts: BotContextOptions): BacktestContext<StrategyPar
     }
     const eventNames = Object.keys(strategy.events ?? {});
 
-    const positions = (): readonly Position[] => account.positions() as readonly Position[];
+    const positions = (): readonly Position[] => pointValue === 1
+        ? account.positions() as readonly Position[]
+        : account.positions().map((position) => ({ ...position, size: position.size * pointValue })) as Position[];
 
     /* Ids handed out for entries the guards turned away. Negative, so one can never collide
      * with an engine's (which count up from 1) or with the live adapter's own. A strategy
@@ -141,15 +149,24 @@ export function botContext(opts: BotContextOptions): BacktestContext<StrategyPar
         get balance() { return account.balance(); },
         get equity() { return account.equity(); },
         get isFlat() { return positions().length === 0; },
-        get pendingOrders() { return account.pending() as Order[]; },
+        get pendingOrders() {
+            const pending = account.pending();
+            return pointValue === 1
+                ? pending as Order[]
+                : pending.map((order) => ({ ...order, size: order.size * pointValue })) as Order[];
+        },
 
         params: strategy.params ?? ({} as StrategyParams),
 
-        buy(spec) {
-            return place({ side: 'buy', type: 'market', ...spec });
+        buy({ stopLoss, takeProfit, ...spec }) {
+            return place({ side: 'buy', type: 'market', ...spec,
+                ...(stopLoss != null || takeProfit != null ? { bracket: { stopLoss, takeProfit } } : {}),
+            });
         },
-        sell(spec) {
-            return place({ side: 'sell', type: 'market', ...spec });
+        sell({ stopLoss, takeProfit, ...spec }) {
+            return place({ side: 'sell', type: 'market', ...spec,
+                ...(stopLoss != null || takeProfit != null ? { bracket: { stopLoss, takeProfit } } : {}),
+            });
         },
         order(spec) {
             return place(spec as OrderSpec);
@@ -189,9 +206,29 @@ export function botContext(opts: BotContextOptions): BacktestContext<StrategyPar
                 return synthetic(spec, gatedId, 'cancelled');
             }
         }
-        const { id } = account.order(spec);
-        opts.onOrder?.(spec, id);
-        return synthetic(spec, id, 'pending');
+        const size = opts.sizeOnGrid?.(spec.size / pointValue) ?? spec.size / pointValue;
+        if (!Number.isFinite(size) || !(size > 0)) {
+            const reason = 'The requested risk or leverage cap is below this market’s minimum order size.';
+            opts.onRefused?.(spec, reason);
+            gatedId -= 1;
+            return synthetic(spec, gatedId, 'cancelled');
+        }
+        const order = { ...spec, size };
+        let id: number;
+        try {
+            ({ id } = account.order(order));
+        } catch (err) {
+            /* A reduce-only order that cannot be placed is an exit that did not happen, and
+             * stays an error. An entry the account turns away — a shut market, an account
+             * read that is not current — costs this setup and nothing else, exactly as a
+             * guard does: the same conditions are asked again on the next one. */
+            if (spec.reduceOnly) throw err;
+            opts.onRefused?.(spec, err instanceof Error ? err.message : String(err));
+            gatedId -= 1;
+            return synthetic(spec, gatedId, 'cancelled');
+        }
+        opts.onOrder?.(order, id);
+        return synthetic(order, id, 'pending');
     }
 }
 

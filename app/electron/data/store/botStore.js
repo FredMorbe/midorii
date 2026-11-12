@@ -20,7 +20,7 @@
  * the same rule strategyStore follows, and for the same reason: a build that renames a
  * parameter must not be met with a file it refuses to read.
  */
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { readFile, open, rename, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
 const BOTS_FILE = 'bots.json';
@@ -39,38 +39,42 @@ function botsFile(dir) {
 async function writeAtomic(file, data) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+  // On the device before the rename, so a power cut cannot leave an empty list behind.
+  const handle = await open(tmp, 'w');
+  try {
+    await handle.writeFile(JSON.stringify(data, null, 2), 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await rename(tmp, file);
 }
 
 /**
  * The stored bots, or an empty list where there are none.
  *
- * A file that cannot be read or parsed answers empty rather than throwing: the app has to
- * open either way, and a bot nobody can read is a bot that has to be set up again. What it
- * must never do is start something on a definition it only half understood.
+ * Only a missing file means an empty list. Corruption must stop loading because an empty
+ * list permits orphan-account cleanup and would erase the evidence of previous trading.
  */
 export async function loadBots(dir) {
   let raw;
   try {
     raw = await readFile(botsFile(dir), 'utf8');
   } catch (err) {
-    if (err.code !== 'ENOENT') {
-      console.error('[midorii] could not read the stored bots', err);
-    }
-    return [];
+    if (err.code === 'ENOENT') return [];
+    throw new Error('The stored bots could not be read.', { cause: err });
   }
 
   try {
     const record = JSON.parse(raw);
     if (record?.version !== VERSION || !Array.isArray(record.bots)) {
-      console.warn('[midorii] the stored bots are not a record this version can read');
-      return [];
+      throw new Error('The stored bots are not a record this version can read.');
     }
+    const ids = record.bots.map((bot) => typeof bot?.id === 'string' ? bot.id.toLowerCase() : null);
+    if (new Set(ids).size !== ids.length) throw new Error('The stored bots contain duplicate ids.');
     return record.bots;
   } catch (err) {
-    console.error('[midorii] the stored bots could not be parsed', err);
-    return [];
+    throw new Error('The stored bots could not be parsed safely.', { cause: err });
   }
 }
 
@@ -86,6 +90,9 @@ export async function saveBots(dir, bots) {
     if (typeof bot.strategy !== 'string' || !bot.strategy.trim()) {
       throw new Error(`saveBots: bot ${bot.id} names no strategy`);
     }
+  }
+  if (new Set(bots.map((bot) => bot.id.toLowerCase())).size !== bots.length) {
+    throw new Error('saveBots: duplicate bot ids are not allowed');
   }
 
   const record = { version: VERSION, bots, savedAt: Date.now() };

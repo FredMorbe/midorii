@@ -3,14 +3,15 @@ import { resolveTheme } from '../../../src/core/theme';
 import { applyThemeTokens, ensureUIHost, injectStyles } from '../../../src/ui';
 import type { VelaWorkspace } from '../../../src/workspace';
 import { formatMoney } from '../format';
-import { TRADE_INDICATOR_TYPE, registerTradeIndicator } from '../replay/replayIndicator';
+import { forEachCell } from '../shell/eachCell';
+import { VisualsFanOut, type AccountCharts } from './accountCharts';
 import { wirePositionLevels } from '../replay/replayLevels';
 import { wireOrderEntry } from '../replay/replayOrders';
 import { wirePendingMenu } from '../replay/chartPending';
 import { wireTradePreview } from '../replay/chartPreview';
 import { mountTradeDock } from '../replay/tradeDock';
 import { mountTradeSidebar } from '../replay/tradeSidebar';
-import { mountQuickPanel } from '../replay/quickPanel';
+import { mountQuickPanel, type QuickPanel } from '../replay/quickPanel';
 import type { BinanceSpotController } from './BinanceSpotController';
 import type { PaperSettings } from './paperSettings';
 import { bracketsOf, riskOf } from './paperSettings';
@@ -59,6 +60,8 @@ export interface BinanceSpotMountOptions {
     stack: HTMLElement;
     main: HTMLElement;
     controller: BinanceSpotController;
+    /** The charts showing the account's market. */
+    charts: AccountCharts;
     settings: () => PaperSettings;
     onSettings: (next: PaperSettings) => void;
     theme: ThemeName | VelaTheme;
@@ -75,14 +78,12 @@ function guarded(ws: VelaWorkspace, run: () => void): void {
 }
 
 export function mountBinanceSpotTrading(opts: BinanceSpotMountOptions): BinanceSpotMount {
-    const { workspace: ws, controller } = opts;
-    const chart = ws.chart;
+    const { workspace: ws, controller, charts } = opts;
     const doc = ws.root.ownerDocument;
     const off: Array<() => void> = [];
 
-    registerTradeIndicator();
-    const indicator = chart.addNativeIndicator(TRADE_INDICATOR_TYPE);
-    controller.attachIndicator(indicator);
+    const visuals = new VisualsFanOut();
+    controller.attachIndicator(visuals);
 
     const sidebar = mountTradeSidebar(opts.main, {
         account: () => ({
@@ -107,7 +108,7 @@ export function mountBinanceSpotTrading(opts: BinanceSpotMountOptions): BinanceS
         onSizing: (next) => opts.onSettings({ ...opts.settings(), sizingMode: next }),
     });
     ensureUIHost(sidebar.el, resolveTheme(opts.theme));
-    off.push(chart.on('theme:changed', (theme) => applyThemeTokens(sidebar.el, theme)));
+    off.push(forEachCell(ws, (cell) => cell.chart.on('theme:changed', (theme) => applyThemeTokens(sidebar.el, theme))));
     off.push(() => {
         sidebar.dispose();
         sidebar.el.remove();
@@ -127,31 +128,37 @@ export function mountBinanceSpotTrading(opts: BinanceSpotMountOptions): BinanceS
     });
     off.push(() => dock.el.remove());
 
-    off.push(wireOrderEntry({
-        chart,
-        controller,
-        host: ws.root,
-        risk: () => riskOf(opts.settings()),
-        notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    }));
-    // A level right-clicked on the plot, onto the ticket as a resting order — not sent.
-    off.push(wirePendingMenu({
-        chart,
-        sidebar,
-        price: () => controller.price(),
-        tick: () => controller.info.tickSize,
-    }));
-    // The ticket drawn where it would trade, before it is sent — see chartPreview.ts.
-    off.push(wireTradePreview({
-        chart,
-        indicator,
-        sidebar,
-        notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    }));
-    off.push(wirePositionLevels({
-        chart,
-        controller,
-        notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+    off.push(charts.each(visuals, (cell, indicator) => {
+        const chart = cell.chart;
+        const wires = [
+            wireOrderEntry({
+                chart,
+                controller,
+                host: ws.root,
+                risk: () => riskOf(opts.settings()),
+                notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+            }),
+            // A level right-clicked on the plot, onto the ticket as a resting order — not sent.
+            wirePendingMenu({
+                chart,
+                sidebar,
+                price: () => controller.price(),
+                tick: () => controller.info.tickSize,
+            }),
+            // The ticket drawn where it would trade, before it is sent — see chartPreview.ts.
+            wireTradePreview({
+                chart,
+                indicator,
+                sidebar,
+                notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+            }),
+            wirePositionLevels({
+                chart,
+                controller,
+                notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+            }),
+        ];
+        return () => { for (const dispose of wires) dispose(); };
     }));
 
     injectStyles(STYLE_ID, CSS, doc);
@@ -203,22 +210,29 @@ export function mountBinanceSpotTrading(opts: BinanceSpotMountOptions): BinanceS
     };
     flatten.onmouseleave = disarm;
     card.append(badge, value.el, quote.el, base.el, note, flatten);
-    const cell = ws.root.querySelector<HTMLElement>('.vela-cell');
-    cell?.appendChild(card);
 
-    /* Buy / size / Sell on the plot, under the band — the same panel a replay and a paper
-     * account get. Its protection goes out as LEVELS: Binance reads two prices and nothing
-     * else, so a distance handed to it is protection dropped on the way out. */
-    const quickPanel = cell
-        ? mountQuickPanel(cell, {
+    /* The card and the quick panel sit on one chart — the anchor — and move with it. */
+    let quickPanel: QuickPanel | null = null;
+    off.push(charts.onAnchor((anchor) => {
+        const cell = anchor.host;
+        cell.appendChild(card);
+        /* Buy / size / Sell on the plot, under the band — the same panel a replay and a paper
+         * account get. Its protection goes out as LEVELS: Binance reads two prices and nothing
+         * else, so a distance handed to it is protection dropped on the way out. */
+        const panel = mountQuickPanel(cell, {
             price: () => controller.price(),
             order: (spec) => guarded(ws, () => controller.order(spec)),
             brackets: 'levels',
             tick: () => controller.info.tickSize,
             anchor: card,
-        })
-        : null;
-    off.push(() => quickPanel?.destroy());
+        });
+        quickPanel = panel;
+        return () => {
+            panel.destroy();
+            if (quickPanel === panel) quickPanel = null;
+            card.remove();
+        };
+    }));
 
     const paint = (): void => {
         // No account line with it: that summary is a history, and this account keeps none.
@@ -245,7 +259,7 @@ export function mountBinanceSpotTrading(opts: BinanceSpotMountOptions): BinanceS
         sidebar.refresh();
         quickPanel?.refresh();
     };
-    off.push(chart.on('bar', (bar) => controller.mark(bar.close)));
+    off.push(charts.onFeed((cell) => cell.chart.on('bar', (bar) => controller.mark(bar.close))));
     paint();
     controller.start();
 
@@ -255,7 +269,6 @@ export function mountBinanceSpotTrading(opts: BinanceSpotMountOptions): BinanceS
             controller.onChange = null;
             for (const dispose of off) dispose();
             card.remove();
-            indicator.remove();
         },
     };
 }

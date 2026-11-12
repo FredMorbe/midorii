@@ -33,6 +33,7 @@ import { loadPrefs, savePrefs, type AppPrefs } from './settings/prefs';
 import { mountSettingsView, type SettingsViewHandle } from './settings/settingsView';
 import { wireRadialMenu } from './settings/radialMenuPrefs';
 import { mountAppTopbar, type AppTab } from './shell/appTopbar';
+import { forEachCell } from './shell/eachCell';
 import { shareChartDoc } from './shell/sharedChartDoc';
 import { paletteOf, type AppStyle, type AppThemeName } from './shell/themes';
 import { installTradeMenu } from './trading/tradeMode';
@@ -133,10 +134,10 @@ const CHART_MARKET = { symbol: 'binance:BTCUSDT', timeframe: '60' };
 
 /* One chart document for every mode: dress the chart here and the bot's and the replay's
  * are dressed with it. The market stays this tab's own — see shell/sharedChartDoc.ts. */
-const chartDoc = shareChartDoc('chart', CHART_MARKET);
+const chartDoc = shareChartDoc('chart', CHART_MARKET, { grid: true });
 
 const workspace = new VelaWorkspace(chartHost, {
-    layout: false,
+    layout: '1',
     live: true,
     theme: palette(),
     symbol: CHART_MARKET.symbol,
@@ -334,7 +335,10 @@ const trading = installTradeMenu({
         && !isBotContext(ctx)
         && !onExperimentalFeed(ctx),
 });
-workspace.chart.on('market:changed', () => workspace.refreshActions());
+/* Which actions the topbar offers depends on the market of the chart they act on, so a market
+ * change on ANY chart re-projects them — and so does moving to another chart. */
+forEachCell(workspace, (cell) => cell.chart.on('market:changed', () => workspace.refreshActions()));
+workspace.on('cell:active', () => workspace.refreshActions());
 (window as unknown as { __trading: typeof trading }).__trading = trading;
 
 /* Price alerts: right-click the chart → "Add Alert" at the clicked level, watched
@@ -692,6 +696,14 @@ if (startupTab !== 'chart') {
 }
 
 // ── the bots this machine was left running ───────────────────────────────
+window.midori.research.onChanged((change) => {
+    const update = change.view ? selectTab(change.view)
+        : !strategiesRoot.hidden && strategiesView ? strategiesView.refresh()
+        : !backtestRoot.hidden && backtestView ? backtestView.refresh()
+        : !analysisRoot.hidden ? analysis().refresh() : Promise.resolve();
+    void update.catch((error: unknown) => console.error('[midorii] could not refresh research results', error));
+});
+
 //
 // Started without the tab being opened, which is the whole point of a bot: it keeps running
 // while somebody looks at the chart, and it comes back when the app does. Paper bots only —

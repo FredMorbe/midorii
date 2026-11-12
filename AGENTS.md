@@ -142,6 +142,13 @@ If you tell the user something is **fixed**, **verified**, or **works**, you mus
 
 ## Code ground rules
 
+**Agent trading restriction.** Agents must never execute trades on real accounts.
+Do not place, amend, cancel, or close live orders or positions, arm a live account,
+or start, enable, or resume a bot that trades real money. This restriction applies
+through MCP, UI automation, scripts, APIs, and every other tool. Agent automation
+is limited to strategy research, historical data, backtests, and simulated results.
+Never expose broker credentials or live trading controls through the MCP connector.
+
 These are the load-bearing conventions of this codebase. The eslint config enforces some
 mechanically; the rest are reviewed by hand.
 

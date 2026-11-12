@@ -3,6 +3,195 @@
 All notable changes to Midorii, newest first. Entries from `v0.6.16` down are
 Vela's — the charting library Midorii is built on and forked from.
 
+## [Unreleased]
+
+### Added
+
+- **Show several charts at once.** The Chart tab has a layout menu beside the symbol: pick a
+  grid of up to sixteen charts and give each one its own market and bar interval. Price
+  alerts and the bid/ask card appear on every chart for the market it shows, and the grid
+  comes back after a restart exactly as you left it. The first chart keeps sharing its look
+  with the Trading Bot and Replay tabs; the other charts belong to the Chart tab alone.
+  The paper account trades every market a chart shows, from one balance: each chart draws the
+  positions and orders of its own market and takes the same clicks and drags, the ticket
+  follows the focused chart, and the dock and the account card cover the whole account — with
+  a market column once it holds more than one. A market that holds something keeps moving
+  when no chart shows it, and an account saved before this opens exactly as it was. A real
+  account (Capital.com, Binance Spot, Bybit, ProjectX) still trades the one market it was
+  switched on for, on every chart that shows it; "Trade … on this account instead" in the
+  account menu moves it to the focused chart's market.
+
+- **Watch other markets beside a replay.** A replay window can show up to four charts. The
+  first one trades, on the market the session was set up on; the others show any market you
+  have downloaded, in any bar interval, on the same clock. A candle appears on them when the
+  clock reaches its end, so they never show more than the session has played, and going back
+  to an earlier candle takes them back with it. The play controls work from any chart, and a
+  session you put down brings its charts back when you pick it up.
+
+- **Save the NQ AMD wick research presets.** The Strategies tab includes separate 1-minute
+  and 3-minute presets with the tested range settings, midpoint confirmation, fixed stop
+  distance and whole-contract sizing for $2,000 planned risk. Both remain available for
+  historical research only.
+
+- **Recognize wick-based range fakeouts.** Choose a wick sweep as the start of a fakeout
+  and disable the fair value gap requirement to identify reversals confirmed by a close
+  through the range midpoint. The range stays fixed before the sweep. A candle sweeping
+  both edges is skipped because its price sequence is unknown.
+
+- **Control strategy research through MCP.** Connect a local agent to create and save
+  custom rule strategies, configure existing strategies, run historical backtests, and
+  read statistics and trades from the app's library. Custom rules also work in parameter
+  sweeps and offline searches. Run numeric ranges directly through MCP, follow progress,
+  cancel unfinished sweeps, and read saved candidates with validation results. The
+  backtesting skill asks for missing risk, asset, and daily trade limits before a search.
+  Completed tests retain the rules they used. Agent tools
+  cannot execute live trades, access broker credentials, or start trading bots.
+
+- **Search strategy settings on saved history.** Prepare local search jobs with fixed data
+  and strategy snapshots, multiple markets and bar intervals, and bounded grid or random
+  searches. Jobs continue after closing the app, save every completed attempt, and resume
+  from stored results. Compare training and validation figures, export CSV or JSONL, and
+  open a candidate in the backtester. A reserved final period tests one selected candidate
+  after the search ends.
+
+- **Use backtest settings in a bot.** The Backtest session offers **Use settings for strategy**
+  to save its strategy parameters and bar interval. The result button copies the values used
+  by that run. Select the strategy in a bot, or load its saved settings in a stopped bot,
+  then save the bot to apply the copy.
+
+- **Go flat when a bot reaches its daily loss limit.** A bot's live conditions have a new
+  setting, **Flat at the daily loss limit**. With it on, the bot closes what it has open and
+  cancels its resting orders as soon as the limit is reached, and keeps trying until it is
+  flat. It is off by default: the limit then only stops new trades, as before. On a
+  Capital.com account the limit is measured on the whole account, so a loss made elsewhere on
+  that account closes the bot's trades too.
+
+- **Set limits for all bots on one Capital.com account.** Settings → Broker connection has a
+  new section for the connected account. **Max open bot positions** caps what the running bots
+  on that account may hold between them, and **Daily loss limit for bots** stops every bot on
+  it from opening anything once the account is down that far on the UTC day. Trades placed by
+  hand count toward the daily loss and not toward the position cap. The demo and the live
+  account each keep their own limits, both limits are off at 0, and neither ever closes a
+  trade.
+
+### Changed
+
+- **Capital.com bots require a safe account start.** Starting on live money always asks for
+  confirmation. Bots require hedging mode, current account data, and durable ownership of
+  their orders. A connection change or uncertain order outcome blocks further entries.
+  Deleting or resetting a bot refuses to discard unresolved venue exposure. Unclear broker
+  replies and gaps between order and position reads keep entries blocked. Account cleanup
+  preserves unresolved ownership, and failed cancellations can be retried deliberately.
+  _(Breaking: resolve legacy exposure that lacks account identification before restarting
+  that bot, enable hedging mode at the venue, and use a strategy that attaches a protective
+  stop to each entry.)_
+
+- **Bot failures block new entries.** Failed strategy execution, failed account persistence,
+  invalid feed updates, and unavailable instrument sizing are reported explicitly. Pending
+  entries reserve position and daily trade slots, and Capital.com sizes never round up
+  beyond the calculated risk. Automated risk sizing uses stated contract values rather than
+  an estimate inferred from unrealized profit.
+
+- **Bot settings preserve the selected bot during loading and saving.** Controls pause while
+  settings load or save. Switching bots ignores late replies from the previous form, and a
+  strategy whose saved settings cannot load keeps its own defaults with a visible error.
+
+- **Reloading bot history preserves usable data on failure.** Incomplete history responses
+  leave the current bars and price intact. A reload cancelled by Stop cannot later report an
+  error against the stopped bot.
+
+
+- **Find a bot’s trades in its own account view.** The Trading Bot screen now labels the
+  selected bot’s account above its chart and opens a Trade history panel with each saved
+  paper trade’s size, entry, exit, fees, and result. Activity remains beside it for orders,
+  fills, and refusals, with a clear reminder that chart studies do not confirm executions.
+
+- **Set up a paper bot in Basic and Advanced views.** Choose its asset, account, strategy,
+  and risk on the Basic page, then adjust setup details and unattended trading limits on
+  Advanced. Unsaved edits stay visible, and starting a bot saves those edits first.
+
+- **Pick a bot's asset from a list instead of typing it.** The bot's **Market** field is now an
+  **Asset** dropdown that opens the symbol search, offering only venues with a live feed — a
+  mistyped ticker is no longer something a bot can be saved with and only meet at Start. If a
+  venue cannot be listed, for example because it is not connected, the screen says which one and
+  why.
+
+- **A refused Capital.com price request says why.** The error now carries the reason the venue
+  gave and the window that was asked for, instead of only "HTTP 400".
+
+- **A Capital.com bot refuses break-even and trailing stops instead of ignoring them.** Only
+  the paper account moves a stop by itself, so a Capital.com bot with **Break-even at** or
+  **Trail from** set now stops at Start and says why, rather than trading without the
+  protection its settings promise. _(Breaking: set both to 0 for a Capital.com bot, or run the
+  bot on the paper account.)_
+
+### Fixed
+
+- **Bot controls stay responsive during live updates.** Stop, the Live and Settings tabs,
+  and bot selection keep accepting clicks while market prices update. Switching bots keeps
+  the controls tied to the selected bot.
+
+- **Paper bots trade the selected market in their own account.** A new bot no longer inherits
+  the market from the previously viewed bot. Paper orders on contract markets use the
+  instrument's point value and tradeable size. Fills appear in the bot's activity and remain
+  in its account after a restart.
+
+- **A bot on Capital.com starts again.** Starting one failed with a price error from the venue,
+  because the bot asked for its history as a stretch of calendar time that Capital.com rejects.
+  Every bot now asks for its latest bars as a count. On markets that close overnight or at the
+  weekend, such as futures, that also fills the whole history instead of about two thirds of it.
+
+- **A paper bot now moves its stop to break-even, and trails, the way its backtest did.** Both
+  settings worked in backtests but were ignored by a running bot, so a trade that reached the
+  chosen R still sat on its original stop. The bot's account now applies them, and the bot's log
+  says when a stop was moved or a trail armed.
+
+- **A Capital.com bot no longer plays the fill sound.** With the fill sound switched on, a
+  bot's fills and closes beeped as if you had placed them by hand. Bots are silent; the chart's
+  own account still plays it.
+
+- **A bot no longer trades on a stale candle after its data feed drops out.** When the feed
+  came back after an outage, the bot treated the last candle it had seen as freshly closed,
+  could open a trade on it, and kept running on a history with the missed candles absent. It
+  now loads the candles it missed before deciding anything, keeps managing what it already
+  holds across them, and opens nothing on a candle that closed during the outage. The bot's log
+  says when a gap was repaired.
+
+- **"Flat at the window's end" keeps trying until the bot is flat.** The bot asked once, at
+  the minute the window ended. If the venue turned that close away, or the app was not running
+  at that minute, the position stayed open overnight. The bot now repeats the request until
+  nothing is open, and a bot started after its window has ended goes flat as well.
+
+- **A paper bot picks its account back up where the market actually went.** A bot restarted
+  after a break put its account straight onto the latest price, so a stop the market had gone
+  through and come back from was still open. The account is now walked over the candles it
+  missed, and the bot's log says how many it replayed and what filled.
+
+- **A bot's strategy remembers its open setup across a restart.** A strategy that planned to be
+  flat by a certain candle, or to let a resting order expire, forgot that plan whenever the bot
+  or the app was restarted, and the position or order was left to its stop and target alone.
+  The plan is now stored with the bot's account and picked up on the next start, for paper and
+  Capital.com bots alike. Where it cannot be matched to the market's history any more, or the
+  bot's strategy, market or settings changed in between, the bot starts without it and its log
+  says so.
+
+- **A quiet data feed is reopened by itself.** A bot whose feed stopped delivering stayed
+  subscribed to it and waited. It now reopens the feed after the "Stale feed after" time, less
+  often the longer the silence lasts, and loads whatever it missed.
+
+- **A daily loss limit or profit target can no longer switch itself off.** When the day's
+  opening equity could not be read, both limits were skipped without a word. The bot now opens
+  nothing until it can measure them, and says why.
+
+- **Strategies that set their stop as a distance can trade on Capital.com.** The opening
+  range, intraday momentum and AMD strategies measure their stop from the entry rather than
+  naming a level. A Capital.com bot now sends that stop with the order, as a level measured
+  from the price the order is expected to trade at.
+
+- **The VWAP reversion strategy no longer slows a long-running bot down.** A bot on this
+  strategy kept every candle it had ever seen, and after about a week on one-minute candles it
+  stopped opening trades until it was restarted.
+
 ## [v0.7.1]
 
 ### Added

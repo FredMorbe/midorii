@@ -1,3 +1,5 @@
+import type { SearchJob, SearchRequest, SearchResult, SearchReview } from './backtest/searchTypes';
+import type { RuleStrategy } from '../../shared/strategies/rules.js';
 export {};
 
 /** One dataset in the library, as the import dialog and the backtest form read it. */
@@ -274,6 +276,14 @@ interface MidoriSessionRecord {
     journal?: unknown;
     /** The recording it plays on ticks, where it has one. */
     ticks?: string | null;
+    /** The charts beside the one that trades, where the window had any. */
+    grid?: MidoriReplayGrid;
+}
+
+/** The layout of a replay window and what each chart but the first watches. */
+export interface MidoriReplayGrid {
+    layout: string;
+    cells: Array<{ id: string; symbol: string; timeframe: string }>;
 }
 
 /** The figures every finished run reports, whoever traded it. `null` where the account
@@ -359,6 +369,8 @@ export interface MidoriRun extends Omit<MidoriRunSummary, 'stats'> {
 interface MidoriPaperAccount {
     symbol: string;
     session: unknown;
+    /** The legs beyond the first and the account's own curve, once it trades more than one market. */
+    extra?: unknown;
     savedAt: number;
 }
 
@@ -415,12 +427,32 @@ export interface MidoriBotGuardRuntime {
 
 /** Venue ids proven to belong to one Capital.com bot. */
 export interface MidoriBotCapitalOwnership {
+    accountId?: string;
+    environment?: 'demo' | 'live';
     /** Distinguishes an empty, verified book from a record created before ownership existed. */
     initialized: boolean;
     positionDealIds: string[];
     workingOrderDealIds: string[];
     /** An order with no verdict may exist, but cannot be assigned safely. */
     uncertain: boolean;
+}
+
+/**
+ * What a bot's strategy remembered between bars, and the bars its indices are counted in.
+ *
+ * A strategy stores bar indices: the bar it means to be flat by, the bar an order expires
+ * on. They only mean anything in the history they were written against, so the record
+ * carries a few of that history's bars by index and time. A restart lines the newly loaded
+ * history up on them, or drops the state when it cannot.
+ */
+export interface MidoriBotStrategyRuntime {
+    /** The strategy, market, bar interval and settings the state was written under. */
+    key: string;
+    state: Record<string, unknown>;
+    /** `[index, time]` pairs from the history, the newest closed bar first. */
+    anchors: Array<[number, number]>;
+    /** A live bot's own order ids by venue deal id, for the orders its state refers to. */
+    orderIds?: Array<[number, string]>;
 }
 
 /** One bot's durable runtime: paper account, guard counters, and live venue ownership. */
@@ -430,6 +462,7 @@ export interface MidoriBotAccount {
     session?: unknown;
     guards?: MidoriBotGuardRuntime;
     capital?: MidoriBotCapitalOwnership;
+    strategy?: MidoriBotStrategyRuntime;
     savedAt: number;
 }
 
@@ -996,6 +1029,10 @@ declare global {
             /** `process.platform` from the main process — `'darwin'` gets native traffic
              *  lights; everywhere else draws its own window controls in the app topbar. */
             platform: string;
+            research: {
+                strategies(): Promise<RuleStrategy[]>;
+                onChanged(handler: (event: { view?: 'strategies' | 'backtest' | 'analysis' }) => void): () => void;
+            };
             ui: {
                 /** Purely cosmetic: keeps the OS window's paint colour in step with the
                  *  app theme so a resize never flashes the other theme's colour.
@@ -1092,6 +1129,8 @@ declare global {
                     journal?: unknown;
                     /** The recording the session plays on ticks, where it has one. */
                     ticks?: string | null;
+                    /** The charts beside the one that trades — see replay/replayMirrors.ts. */
+                    grid?: MidoriReplayGrid;
                     stats?: Record<string, unknown>;
                 }): Promise<{ id: string }>;
                 sessions(): Promise<MidoriSessionRecord[]>;
@@ -1102,7 +1141,7 @@ declare global {
              *  `replay.save` instead, onto the same shelf backtests and replays land on. */
             paper: {
                 load(): Promise<MidoriPaperAccount | null>;
-                save(account: { symbol: string; session: unknown }): Promise<{ savedAt: number }>;
+                save(account: { symbol: string; session: unknown; extra?: unknown }): Promise<{ savedAt: number }>;
                 clear(): Promise<boolean>;
             };
             /** A finished backtest. The loop runs in the renderer, where the detectors a
@@ -1130,6 +1169,15 @@ declare global {
             };
             /** A finished parameter sweep — a ranking of settings rather than an account.
              *  Its own shelf beside the runs, read on the same Analysis screen. */
+            search: {
+                limits(): Promise<{ workers: number }>;
+                prepare(request: SearchRequest): Promise<SearchJob>;
+                list(): Promise<SearchJob[]>;
+                command(request: { id: string; action: 'start' | 'pause' | 'finish' | 'final'; index?: number }): Promise<boolean>;
+                results(request: { id: string; datasetIndex: number; metric: string; minTrades: number }): Promise<{ count: number; rows: SearchResult[] }>;
+                export(request: { id: string; format: 'csv' | 'jsonl' }): Promise<{ file: string; bytes: number } | null>;
+                review(request: { id: string; index: number; period?: 'train' | 'validation' | 'holdout' }): Promise<SearchReview>;
+            };
             sweep: {
                 save(request: Record<string, unknown>): Promise<MidoriSweepSummary>;
                 list(): Promise<MidoriSweepSummary[]>;
@@ -1229,7 +1277,7 @@ declare global {
                  * money is one word in a file, and anything that can place an order has to be
                  * able to SAY which of the two it is wired to rather than assume.
                  */
-                environment(): Promise<{ configured: boolean; env: 'demo' | 'live' | null; live: boolean }>;
+                environment(): Promise<{ configured: boolean; env: 'demo' | 'live' | null; live: boolean; revision?: number }>;
                 /**
                  * Move to the other account on the credentials already held.
                  *
@@ -1256,6 +1304,7 @@ declare global {
                 onOhlc(handler: (payload: { subscriptionId: string; bar: MidoriCapitalBar }) => void): () => void;
                 /** The trading account this session acts on — the preferred one. */
                 account(): Promise<MidoriCapitalAccount | null>;
+                preferences(): Promise<{ hedgingMode: boolean }>;
                 /** Every position the account holds, including ones this app never opened. */
                 positions(): Promise<MidoriCapitalPosition[]>;
                 /**
@@ -1264,7 +1313,7 @@ declare global {
                  * at all, which is not the same as a refusal: the instruction was delivered,
                  * so the position list is the thing to check before sending it again.
                  */
-                openPosition(spec: MidoriCapitalOrderSpec): Promise<MidoriCapitalConfirmation>;
+                openPosition(spec: MidoriCapitalOrderSpec, revision?: number): Promise<MidoriCapitalConfirmation>;
                 /** Move (or, with an explicit null, remove) the stop and target on a position.
                  *  `trailingStop` true needs `stopDistance`, the trail in price. The call
                  *  REPLACES the protection set, so every side that should stay is re-sent. */
@@ -1274,8 +1323,8 @@ declare global {
                     profitLevel?: number | null;
                     trailingStop?: boolean;
                     stopDistance?: number;
-                }): Promise<MidoriCapitalConfirmation>;
-                closePosition(dealId: string): Promise<MidoriCapitalConfirmation>;
+                }, revision?: number): Promise<MidoriCapitalConfirmation>;
+                closePosition(dealId: string, revision?: number): Promise<MidoriCapitalConfirmation>;
                 /** Every resting order the account holds, on any instrument. */
                 workingOrders(): Promise<MidoriCapitalWorkingOrder[]>;
                 /** Rest an order at a level. Which of LIMIT/STOP a level means follows from
@@ -1288,14 +1337,14 @@ declare global {
                     level: number;
                     stopLevel?: number;
                     profitLevel?: number;
-                }): Promise<MidoriCapitalConfirmation>;
+                }, revision?: number): Promise<MidoriCapitalConfirmation>;
                 amendOrder(spec: {
                     dealId: string;
                     level?: number;
                     stopLevel?: number | null;
                     profitLevel?: number | null;
-                }): Promise<MidoriCapitalConfirmation>;
-                cancelOrder(dealId: string): Promise<MidoriCapitalConfirmation>;
+                }, revision?: number): Promise<MidoriCapitalConfirmation>;
+                cancelOrder(dealId: string, revision?: number): Promise<MidoriCapitalConfirmation>;
                 /**
                  * The two ledgers a finished trade's real cost has to be joined from — the
                  * cash side and the position's life. The window is in epoch milliseconds and
@@ -1472,7 +1521,7 @@ declare global {
              * {@link environment}; nothing here can choose it.
              */
             bybit: {
-                environment(): Promise<{ configured: boolean; env: 'demo' | 'live' | null; live: boolean }>;
+                environment(): Promise<{ configured: boolean; env: 'demo' | 'live' | null; live: boolean; revision?: number }>;
                 credentials: {
                     status(): Promise<MidoriBybitCredentialStatus>;
                     test(creds: { apiKey: string; secretKey: string; env: 'demo' | 'live' }): Promise<MidoriBybitAccountSummary>;

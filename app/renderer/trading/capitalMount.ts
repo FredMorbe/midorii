@@ -3,7 +3,8 @@ import { resolveTheme } from '../../../src/core/theme';
 import { mountTradeDock } from '../replay/tradeDock';
 import { mountTradeSidebar } from '../replay/tradeSidebar';
 import type { VelaWorkspace } from '../../../src/workspace';
-import { TRADE_INDICATOR_TYPE, registerTradeIndicator } from '../replay/replayIndicator';
+import { forEachCell } from '../shell/eachCell';
+import { VisualsFanOut, type AccountCharts } from './accountCharts';
 import { wirePositionLevels } from '../replay/replayLevels';
 import { wireOrderEntry } from '../replay/replayOrders';
 import { wirePendingMenu } from '../replay/chartPending';
@@ -18,7 +19,7 @@ import type { PaperSettings } from './paperSettings';
 import { bracketsOf, riskOf } from './paperSettings';
 import { sessionState } from './riskLimits';
 import { flattenAll, wireProp } from './propBand';
-import { mountAccountBand } from './accountBand';
+import { mountAccountBand, type AccountBand } from './accountBand';
 import { installTradeHotkeys, loadHotkeys } from './hotkeys';
 import { tickSizeOf } from '../alerts/symbolTick';
 import { historyStats } from './accountStats';
@@ -89,6 +90,8 @@ export interface CapitalMountOptions {
     /** The row the chart lives in. */
     main: HTMLElement;
     controller: CapitalController;
+    /** The charts showing the account's market. */
+    charts: AccountCharts;
     /** Which account this is, as the trade menu keys it — `capital:live` or `capital:demo`.
      *  The limits and the trailing mark are kept under it, so the two sides keep their own. */
     accountKey: string;
@@ -121,17 +124,15 @@ function guarded(ws: VelaWorkspace, run: () => void): void {
 }
 
 export function mountCapitalTrading(opts: CapitalMountOptions): CapitalMount {
-    const { workspace: ws, controller } = opts;
-    const chart = ws.chart;
+    const { workspace: ws, controller, charts } = opts;
     const doc = ws.root.ownerDocument;
     const off: Array<() => void> = [];
 
     // The account's own visuals — the same indicator a replay and a paper account draw with.
-    registerTradeIndicator();
-    const indicator = chart.addNativeIndicator(TRADE_INDICATOR_TYPE);
-    controller.attachIndicator(indicator);
+    const visuals = new VisualsFanOut();
+    controller.attachIndicator(visuals);
     // How positions are drawn, and the Trading tab in the chart settings that says so.
-    off.push(wirePositionStyle({ workspace: ws, indicator }).dispose);
+    off.push(wirePositionStyle({ workspace: ws, indicator: visuals }).dispose);
 
     /* ── the ticket beside the plot ──────────────────────────────────────
      *
@@ -285,7 +286,7 @@ export function mountCapitalTrading(opts: CapitalMountOptions): CapitalMount {
     /* Its own kit host: the ticket is a sibling of the chart rather than a child, so the
      * theme variables the workspace writes on its own root do not reach it. */
     ensureUIHost(sidebar.el, resolveTheme(opts.theme));
-    off.push(chart.on('theme:changed', (theme) => applyThemeTokens(sidebar.el, theme)));
+    off.push(forEachCell(ws, (cell) => cell.chart.on('theme:changed', (theme) => applyThemeTokens(sidebar.el, theme))));
     off.push(() => {
         sidebar.dispose();
         sidebar.el.remove();
@@ -314,27 +315,38 @@ export function mountCapitalTrading(opts: CapitalMountOptions): CapitalMount {
     off.push(() => dock.el.remove());
 
     // ── the two ways in through the chart itself ─────────────────────────
-    off.push(wireOrderEntry({
-        chart,
-        controller,
-        host: ws.root,
-        risk: () => riskOf(opts.settings()),
-        beforeOrder: guardLimits,
-        notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    }));
-    // A level right-clicked on the plot, onto the ticket as a resting order — not sent.
-    off.push(wirePendingMenu({
-        chart,
-        sidebar,
-        price: () => controller.price(),
-        tick: () => tickSizeOf(opts.epic) ?? null,
-    }));
-    // The ticket drawn where it would trade, before it is sent — see chartPreview.ts.
-    off.push(wireTradePreview({
-        chart,
-        indicator,
-        sidebar,
-        notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+    off.push(charts.each(visuals, (cell, indicator) => {
+        const chart = cell.chart;
+        const wires = [
+            wireOrderEntry({
+                chart,
+                controller,
+                host: ws.root,
+                risk: () => riskOf(opts.settings()),
+                beforeOrder: guardLimits,
+                notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+            }),
+            // A level right-clicked on the plot, onto the ticket as a resting order — not sent.
+            wirePendingMenu({
+                chart,
+                sidebar,
+                price: () => controller.price(),
+                tick: () => tickSizeOf(opts.epic) ?? null,
+            }),
+            // The ticket drawn where it would trade, before it is sent — see chartPreview.ts.
+            wireTradePreview({
+                chart,
+                indicator,
+                sidebar,
+                notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+            }),
+            wirePositionLevels({
+                chart,
+                controller,
+                notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
+            }),
+        ];
+        return () => { for (const dispose of wires) dispose(); };
     }));
     /* The keys — the same ones every traded chart here answers to. Break-even applies to the
      * first open position, as it does on the other accounts. */
@@ -352,169 +364,177 @@ export function mountCapitalTrading(opts: CapitalMountOptions): CapitalMount {
         },
     }));
 
-    off.push(wirePositionLevels({
-        chart,
-        controller,
-        notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    }));
-
     // ── the band that says which account this is ─────────────────────────
     injectStyles(STYLE_ID, CSS, doc);
-    const cell = ws.root.querySelector<HTMLElement>('.vela-cell');
-    if (!cell) console.warn('[midorii] no chart cell to mount the live account band into');
     const badgeTitle = opts.live
         ? 'Orders from this chart are real orders on a real account.'
         : 'Real prices, money that is not real. The Trade menu switches to the live account.';
 
-    const band = cell ? mountAccountBand({
-        cell,
-        badge: opts.live ? 'Live money' : 'Demo',
-        badgeTitle: badgeTitle,
-        live: opts.live,
-        storageKey: 'midorii-band-capital',
-        columns: [
-            {
-                id: 'equity',
-                /* The account's own money, named on the label. A CFD account holds one currency
-                 * while its instruments quote in others, so "4,821.55" is a figure and not yet
-                 * an amount. */
-                label: () => {
-                    const ccy = controller.accountCurrency();
-                    return ccy ? `Equity ${ccy}` : 'Equity';
-                },
-                title: 'What the venue says the account is worth — its figure, not a computed one. '
-                    + 'The label carries the currency the account itself is held in; an instrument '
-                    + 'quoting in another one books its results in that other money.',
-                value: () => formatMoney(controller.equity()),
-            },
-            {
-                id: 'available',
-                label: 'Available',
-                title: 'What is left to open something new with, after margin.',
-                value: () => formatMoney(controller.available()),
-            },
-            {
-                id: 'open',
-                label: 'Open P/L',
-                title: 'What the venue says the open positions are worth right now — its own figure.',
-                value: () => {
-                    const open = controller.positions();
-                    if (open.length === 0) return '—';
-                    return formatMoney(open.reduce((sum, p) => sum + p.upl, 0));
-                },
-                tone: () => {
-                    const total = controller.positions().reduce((sum, p) => sum + p.upl, 0);
-                    return total === 0 ? null : total > 0 ? 'up' : 'down';
-                },
-                optional: true,
-            },
-            {
-                id: 'session',
-                label: 'Session',
-                title: 'What this session has realised — the same day the session limits are measured over.',
-                value: () => formatMoney(sessionState(journalRows(journal)).realised),
-                tone: () => {
-                    const realised = sessionState(journalRows(journal)).realised;
-                    return realised === 0 ? null : realised > 0 ? 'up' : 'down';
-                },
-                optional: true,
-            },
-            ...prop.columns,
-        ],
-        actions: [
-            prop.action,
-            {
-                id: 'break-even',
-                label: 'Break-even',
-                refusal: () => controller.breakEvenRefusal(),
-                title: () => `Move the stop to ${controller.positions()[0]?.entryPrice ?? 'the entry'}.`,
-                run: () => guarded(ws, () => controller.breakEven()),
-            },
-            {
-                id: 'flatten',
-                label: 'Close all',
-                tone: 'danger' as const,
-                /* Two presses rather than one — it closes real positions at market — but never
-                 * more than two, and never behind a menu. */
-                arm: { label: 'Close all — press again' },
-                refusal: () => (controller.positions().length === 0 ? 'Nothing is open.' : null),
-                title: () => {
-                    const open = controller.positions().length;
-                    return `Close ${open} open ${open === 1 ? 'position' : 'positions'} at market, now.`;
-                },
-                run: () => {
-                    /* One instruction per position: the venue has no "flatten" of its own, and
-                     * the order gate in the main process keeps them inside its rate limit. */
-                    for (const position of controller.positions()) guarded(ws, () => controller.closeOne(position.id));
-                },
-            },
-        ],
-        /* One line for the two things that make every figure beside it untrustworthy or
-         * unusable: a connection that has stopped answering, and a market that is shut.
-         * Staleness first — a market status read minutes ago is not news about the market, it
-         * is another figure that has stopped being confirmed. */
-        staleNote: () => {
-            if (controller.isStale()) {
-                const at = controller.readAt();
-                return at > 0 ? `not answering · last ${new Date(at).toISOString().slice(11, 19)}` : 'not answering';
-            }
-            if (!controller.tradeable()) {
-                return controller.status() === 'CLOSED' ? 'market closed' : `market ${String(controller.status()).toLowerCase()}`;
-            }
-            return null;
-        },
-    }) : null;
-    const card = band?.el ?? null;
-    /* Which account this is, in one word, for when the band is not on the chart. It is not a
-     * smaller band and does not try to be: no figures, no controls, nothing to press — just
-     * the fact that would otherwise leave with the band. */
-    const mark = doc.createElement('div');
-    mark.className = 'midorii-live-mark';
-    mark.dataset.live = opts.live ? '1' : '0';
-    mark.textContent = opts.live ? 'Live money' : 'Demo';
-    mark.title = opts.live
-        ? 'Orders from this chart are real orders on a real account. The account band is put '
-            + 'away — bring it back from the corner, or from Settings → Customization.'
-        : 'Real prices, money that is not real. The account band is put away — bring it back '
-            + 'from the corner, or from Settings → Customization.';
-    mark.hidden = true;
-    if (cell) cell.appendChild(mark);
-
-    /* Buy / size / Sell on the plot, the same panel a replay and a paper account get — see
-     * `quickPanel.ts`. Declared before the band's own card so that card can tell it to move
-     * when the band goes away and the mark takes its place. */
+    /* The band, the mark and the quick panel sit on ONE chart — the anchor — and follow the
+     * focus between the charts on the account's market. Several copies would show a real
+     * account twice. Declared before the band's own card so that card can tell the panel to
+     * move when the band goes away and the mark takes its place. */
+    let band: AccountBand | null = null;
     let quick: QuickPanel | null = null;
-
-    /* Draggable, closable, and switchable off — see the note at the top of this file for what
-     * closing a LIVE account's band costs, and what the mark above keeps hold of. No `place`
-     * of its own: with nothing dragged the CSS holds it in the corner. */
-    const overlay = cell && card ? makeOverlayCard(cell, card, {
-        id: 'live',
-        onVisibility: (visible) => {
-            mark.hidden = visible;
-            /* The panel below sits under whichever of the two is in the corner, and neither
-             * a band switched to display:none nor the mark appearing is a resize anything
-             * would hear about. */
-            quick?.reflow();
-        },
-    }) : null;
-    if (overlay) {
-        off.push(() => overlay.destroy());
-    }
-
-    if (cell) {
-        quick = mountQuickPanel(cell, {
-            price: () => controller.price(),
-            order: (spec) => guarded(ws, () => { guardLimits(spec); controller.order(spec); }),
-            /* The venue takes two prices and reads nothing else — a distance handed to it is
-             * protection dropped on the way out. See `QuickProtection`. */
-            brackets: 'levels',
-            tick: () => tickSizeOf(opts.epic) ?? null,
-            // Under the band, or under the one line the band leaves behind.
-            anchor: () => (card == null || card.hidden ? mark : card),
+    const mountCard = (cell: HTMLElement): (() => void) => {
+        const mounted = mountAccountBand({
+            cell,
+            badge: opts.live ? 'Live money' : 'Demo',
+            badgeTitle: badgeTitle,
+            live: opts.live,
+            storageKey: 'midorii-band-capital',
+            columns: [
+                {
+                    id: 'equity',
+                    /* The account's own money, named on the label. A CFD account holds one currency
+                     * while its instruments quote in others, so "4,821.55" is a figure and not yet
+                     * an amount. */
+                    label: () => {
+                        const ccy = controller.accountCurrency();
+                        return ccy ? `Equity ${ccy}` : 'Equity';
+                    },
+                    title: 'What the venue says the account is worth — its figure, not a computed one. '
+                        + 'The label carries the currency the account itself is held in; an instrument '
+                        + 'quoting in another one books its results in that other money.',
+                    value: () => formatMoney(controller.equity()),
+                },
+                {
+                    id: 'available',
+                    label: 'Available',
+                    title: 'What is left to open something new with, after margin.',
+                    value: () => formatMoney(controller.available()),
+                },
+                {
+                    id: 'open',
+                    label: 'Open P/L',
+                    title: 'What the venue says the open positions are worth right now — its own figure.',
+                    value: () => {
+                        const open = controller.positions();
+                        if (open.length === 0) return '—';
+                        return formatMoney(open.reduce((sum, p) => sum + p.upl, 0));
+                    },
+                    tone: () => {
+                        const total = controller.positions().reduce((sum, p) => sum + p.upl, 0);
+                        return total === 0 ? null : total > 0 ? 'up' : 'down';
+                    },
+                    optional: true,
+                },
+                {
+                    id: 'session',
+                    label: 'Session',
+                    title: 'What this session has realised — the same day the session limits are measured over.',
+                    value: () => formatMoney(sessionState(journalRows(journal)).realised),
+                    tone: () => {
+                        const realised = sessionState(journalRows(journal)).realised;
+                        return realised === 0 ? null : realised > 0 ? 'up' : 'down';
+                    },
+                    optional: true,
+                },
+                ...prop.columns,
+            ],
+            actions: [
+                prop.action,
+                {
+                    id: 'break-even',
+                    label: 'Break-even',
+                    refusal: () => controller.breakEvenRefusal(),
+                    title: () => `Move the stop to ${controller.positions()[0]?.entryPrice ?? 'the entry'}.`,
+                    run: () => guarded(ws, () => controller.breakEven()),
+                },
+                {
+                    id: 'flatten',
+                    label: 'Close all',
+                    tone: 'danger' as const,
+                    /* Two presses rather than one — it closes real positions at market — but never
+                     * more than two, and never behind a menu. */
+                    arm: { label: 'Close all — press again' },
+                    refusal: () => (controller.positions().length === 0 ? 'Nothing is open.' : null),
+                    title: () => {
+                        const open = controller.positions().length;
+                        return `Close ${open} open ${open === 1 ? 'position' : 'positions'} at market, now.`;
+                    },
+                    run: () => {
+                        /* One instruction per position: the venue has no "flatten" of its own, and
+                         * the order gate in the main process keeps them inside its rate limit. */
+                        for (const position of controller.positions()) guarded(ws, () => controller.closeOne(position.id));
+                    },
+                },
+            ],
+            /* One line for the two things that make every figure beside it untrustworthy or
+             * unusable: a connection that has stopped answering, and a market that is shut.
+             * Staleness first — a market status read minutes ago is not news about the market, it
+             * is another figure that has stopped being confirmed. */
+            staleNote: () => {
+                if (controller.isStale()) {
+                    const at = controller.readAt();
+                    return at > 0 ? `not answering · last ${new Date(at).toISOString().slice(11, 19)}` : 'not answering';
+                }
+                if (!controller.tradeable()) {
+                    return controller.status() === 'CLOSED' ? 'market closed' : `market ${String(controller.status()).toLowerCase()}`;
+                }
+                return null;
+            },
         });
-        off.push(() => quick?.destroy());
-    }
+        band = mounted;
+        const card = mounted.el;
+        /* Which account this is, in one word, for when the band is not on the chart. It is not a
+         * smaller band and does not try to be: no figures, no controls, nothing to press — just
+         * the fact that would otherwise leave with the band. */
+        const mark = doc.createElement('div');
+        mark.className = 'midorii-live-mark';
+        mark.dataset.live = opts.live ? '1' : '0';
+        mark.textContent = opts.live ? 'Live money' : 'Demo';
+        mark.title = opts.live
+            ? 'Orders from this chart are real orders on a real account. The account band is put '
+                + 'away — bring it back from the corner, or from Settings → Customization.'
+            : 'Real prices, money that is not real. The account band is put away — bring it back '
+                + 'from the corner, or from Settings → Customization.';
+        mark.hidden = true;
+        cell.appendChild(mark);
+
+        /* Buy / size / Sell on the plot, the same panel a replay and a paper account get — see
+         * `quickPanel.ts`. */
+        /* Draggable, closable, and switchable off — see the note at the top of this file for what
+         * closing a LIVE account's band costs, and what the mark above keeps hold of. No `place`
+         * of its own: with nothing dragged the CSS holds it in the corner. */
+        const overlay = makeOverlayCard(cell, card, {
+            id: 'live',
+            onVisibility: (visible) => {
+                mark.hidden = visible;
+                /* The panel below sits under whichever of the two is in the corner, and neither
+                 * a band switched to display:none nor the mark appearing is a resize anything
+                 * would hear about. */
+                quick?.reflow();
+            },
+        });
+
+        {
+            const panel = mountQuickPanel(cell, {
+                price: () => controller.price(),
+                order: (spec) => guarded(ws, () => { guardLimits(spec); controller.order(spec); }),
+                /* The venue takes two prices and reads nothing else — a distance handed to it is
+                 * protection dropped on the way out. See `QuickProtection`. */
+                brackets: 'levels',
+                tick: () => tickSizeOf(opts.epic) ?? null,
+                // Under the band, or under the one line the band leaves behind.
+                anchor: () => (card.hidden ? mark : card),
+            });
+            quick = panel;
+        }
+        return () => {
+            quick?.destroy();
+            overlay.destroy();
+            mounted.destroy();
+            mark.remove();
+            if (band === mounted) band = null;
+            quick = null;
+        };
+        };
+        off.push(charts.onAnchor((anchor) => {
+            const release = mountCard(anchor.host);
+            paint();
+            return release;
+        }));
 
     function paint(): void {
         /* One reading, at the top, for everything below it — see the note in propBand.ts. */
@@ -541,15 +561,15 @@ export function mountCapitalTrading(opts: CapitalMountOptions): CapitalMount {
      * whole spread on one side. The stream carries both. The candle close still comes through
      * as a fallback for the moments before the first tick lands — better a one-sided price
      * than none, as long as nothing pretends otherwise. */
-    const provider = chart.data.providerInstance('capital') as
+    const provider = ws.chart.data.providerInstance('capital') as
         { subscribeQuotes?: (t: string, cb: (q: { bid: number; ask: number }) => void) => () => void } | undefined;
     if (typeof provider?.subscribeQuotes === 'function') {
         off.push(provider.subscribeQuotes(opts.epic, (q) => controller.markQuote(q.bid, q.ask)));
     }
-    off.push(chart.on('bar', (bar) => {
+    off.push(charts.onFeed((cell) => cell.chart.on('bar', (bar) => {
         controller.mark(bar.close);
         sidebar.markVolume(bar.close, bar.volume ?? 0);
-    }));
+    })));
 
     controller.start();
 
@@ -563,9 +583,6 @@ export function mountCapitalTrading(opts: CapitalMountOptions): CapitalMount {
             controller.onChange = null;
             controller.onTradeClosed = null;
             for (const dispose of off) dispose();
-            band?.destroy();
-            mark.remove();
-            indicator.remove();
         },
     };
 }

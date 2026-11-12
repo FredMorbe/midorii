@@ -7,6 +7,9 @@ import { openChangelog } from '../about/changelogDialog';
 import { button } from '../runs/runViews';
 import { STYLES, STYLE_OPTIONS, type AppStyle, type AppThemeName } from '../shell/themes';
 import { DEFAULT_PAPER_SETTINGS, needsFreshAccount, type PaperSettings } from '../trading/paperSettings';
+import {
+    NO_ACCOUNT_RISK, capitalAccountKey, loadAccountRisk, saveAccountRisk, type AccountRisk,
+} from '../bot/accountRisk';
 import { normalizeQuickSizes } from '../replay/orderTicket';
 import {
     DEFAULT_POSITION_STYLE, LINE_WIDTHS, ZONE_OPACITIES, loadPositionStyle, opacityLabel,
@@ -956,6 +959,50 @@ export function mountSettingsView(host: HTMLElement, opts: SettingsViewOptions):
         }
         panel.append(actions, accounts);
         inner.append(panel);
+
+        /* What every bot on the connected account answers to together. Shown for the account
+         * that is connected and stored under it, so the demo account's limits are never the
+         * live one's. Saved as they are typed, like every other setting on this screen. */
+        if (broker?.configured) {
+            const account = capitalAccountKey(broker.env === 'live');
+            let risk = NO_ACCOUNT_RISK;
+            let unreadable = false;
+            try {
+                risk = loadAccountRisk(account);
+            } catch {
+                unreadable = true;
+            }
+            const change = (patch: Partial<AccountRisk>): void => {
+                risk = { ...risk, ...patch };
+                saveAccountRisk(account, risk);
+            };
+            inner.append(card(
+                fieldSection(`Limits for bots on this account · ${broker.env === 'live' ? 'LIVE MONEY' : 'demo'}`),
+                note('These apply to every trading bot on this Capital.com account together, on top of each '
+                    + 'bot’s own live conditions. They can only stop a bot from opening a trade; they never '
+                    + 'close one. 0 switches a limit off.'
+                    + (unreadable ? ' The stored limits could not be read; bots open nothing until they are set again here.' : '')),
+                numberRow('Max open bot positions', {
+                    value: risk.maxBotPositions,
+                    min: 0,
+                    max: 50,
+                    step: 1,
+                    onChange: (v) => change({ maxBotPositions: v }),
+                }),
+                note('Positions and resting entry orders held by the running bots on this account, counted '
+                    + 'together. Trades placed by hand and what a stopped bot left open are not counted.'),
+                numberRow('Daily loss limit for bots (%)', {
+                    value: risk.dailyLossPct,
+                    min: 0,
+                    max: 100,
+                    step: 0.5,
+                    onChange: (v) => change({ dailyLossPct: v }),
+                }),
+                note('How far the account may fall below where it started the UTC day before no bot on it '
+                    + 'opens anything for the rest of that day. Measured on the whole account’s equity, so '
+                    + 'trades placed by hand count too.'),
+            ));
+        }
 
         /* Binance is a separate, demo-only connection. Its fixed environment is a fact,
          * not a selector: there is no production endpoint behind this form. */

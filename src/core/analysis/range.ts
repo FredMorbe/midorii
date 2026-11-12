@@ -70,6 +70,8 @@ import { atr } from '../native-indicators/classics/math';
  *           edge of the data.
  *
  * Ranges never overlap. After one ends the scan resumes past its breakout.
+ * With `breakMode: 'wick'`, the first wick beyond a confirmed range ends it before its
+ * edges widen. A bar sweeping both edges ends the range without assigning a direction.
  *
  * Three indices, as in the FVG detector
  * -------------------------------------
@@ -101,6 +103,7 @@ import { atr } from '../native-indicators/classics/math';
 
 /** Which way price left the range. */
 export type RangeBreak = 'up' | 'down';
+export type RangeBreakMode = 'close' | 'wick';
 
 /** One detected range. Indices are positions in the array that was passed in. */
 export interface Range {
@@ -135,9 +138,10 @@ export interface Range {
     touchesTop: number;
     touchesBottom: number;
 
-    /** The bar that closed beyond an edge, or null where the range ended some other way. */
+    /** The bar that broke an edge in the selected mode, or null where the range ended another way. */
     breakIndex: number | null;
     breakTime: number | null;
+    /** Null also when one wick-mode bar crosses both edges, whose order OHLC cannot establish. */
     breakDirection: RangeBreak | null;
     /** Where the breaking bar settled — the only thing about a breakout known on the bar itself. */
     breakClose: number | null;
@@ -159,8 +163,10 @@ export interface RangeDetectOptions {
     minTouches?: number;
     /** Percent of the height that counts as reaching an edge. Default 15. */
     touchZone?: number;
-    /** Percent of the height a close must clear to end the range. Default 0. */
+    /** Percent of the height the selected close or wick must clear to end the range. Default 0. */
     breakBuffer?: number;
+    /** What ends a confirmed range: a close or the first wick beyond an edge. Default `close`. */
+    breakMode?: RangeBreakMode;
     /** Only ranges confirmed in the last N bars; 0 = all. */
     lookback?: number;
 }
@@ -174,6 +180,7 @@ export const RANGE_DEFAULTS = {
     minTouches: 2,
     touchZone: 15,
     breakBuffer: 0,
+    breakMode: 'close' as RangeBreakMode,
     lookback: 0,
 } as const;
 
@@ -186,6 +193,7 @@ export function detectRanges(bars: readonly OHLCV[], opts: RangeDetectOptions = 
     const minTouches = opts.minTouches ?? RANGE_DEFAULTS.minTouches;
     const touchZone = opts.touchZone ?? RANGE_DEFAULTS.touchZone;
     const breakBuffer = opts.breakBuffer ?? RANGE_DEFAULTS.breakBuffer;
+    const breakMode = opts.breakMode ?? RANGE_DEFAULTS.breakMode;
 
     /* Thrown, not clamped. Every one of these changes what a range IS, and a silently
      * corrected setting would paint a chart of boxes that answer a different question. */
@@ -196,6 +204,7 @@ export function detectRanges(bars: readonly OHLCV[], opts: RangeDetectOptions = 
     if (!(minTouches >= 1)) throw new Error(`detectRanges: minTouches must be >= 1, got ${minTouches}`);
     if (!(touchZone > 0 && touchZone <= 50)) throw new Error(`detectRanges: touchZone must be in (0, 50], got ${touchZone}`);
     if (!(breakBuffer >= 0)) throw new Error(`detectRanges: breakBuffer must be >= 0, got ${breakBuffer}`);
+    if (breakMode !== 'close' && breakMode !== 'wick') throw new Error(`detectRanges: unknown breakMode "${String(breakMode)}"`);
     if (bars.length === 0) return [];
 
     const found = scan(bars, {
@@ -206,6 +215,7 @@ export function detectRanges(bars: readonly OHLCV[], opts: RangeDetectOptions = 
         minTouches,
         touchZone: touchZone / 100,
         breakBuffer: breakBuffer / 100,
+        breakMode,
     });
     return report(found, bars.length, opts.lookback ?? RANGE_DEFAULTS.lookback);
 }
@@ -220,11 +230,12 @@ interface ScanOptions {
     touchZone: number;
     /** Already a fraction of the height. */
     breakBuffer: number;
+    breakMode: RangeBreakMode;
 }
 
 /** Walks the bars once, seeding at every position and extending what holds. */
 function scan(bars: readonly OHLCV[], opt: ScanOptions): Range[] {
-    const { minBars, maxBars, compression, atrPeriod, minTouches, touchZone, breakBuffer } = opt;
+    const { minBars, maxBars, compression, atrPeriod, minTouches, touchZone, breakBuffer, breakMode } = opt;
     const volatility = atr(bars, atrPeriod);
     const out: Range[] = [];
 
@@ -276,6 +287,17 @@ function scan(bars: readonly OHLCV[], opt: ScanOptions): Range[] {
         for (let j = end + 1; j < bars.length && j - i + 1 <= maxBars; j += 1) {
             const bar = bars[j]!;
             const pad = (top - bottom) * breakBuffer;
+
+            if (breakMode === 'wick' && confirmIndex >= 0) {
+                const above = bar.high > top + pad;
+                const below = bar.low < bottom - pad;
+                if (above || below) {
+                    breakIndex = j;
+                    // A single OHLC bar cannot establish which of two swept edges came first.
+                    breakDirection = above === below ? null : above ? 'up' : 'down';
+                    break;
+                }
+            }
 
             // A close beyond an edge is the end of the range, whatever the wick did.
             if (bar.close > top + pad) {

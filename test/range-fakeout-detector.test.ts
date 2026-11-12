@@ -35,6 +35,50 @@ function mirrored(rows: readonly Row[]): Row[] {
 const OPTS = { range: { minBars: 5 } };
 
 describe('range fakeout detector', () => {
+    const wick = bars([...LEAD, [100.5, 102, 99.3, 99.6], [99.6, 100, 99.2, 99.4]]);
+    const wickOptions = { range: { minBars: 5, breakMode: 'wick' as const }, requireGap: false };
+
+    it('confirms a wick-only sweep on its close through the frozen midpoint without a gap', () => {
+        expect(detectRangeFakeouts(wick, wickOptions)).toEqual([expect.objectContaining({
+            direction: 'bear', top: 101, bottom: 99, middle: 100,
+            breakIndex: 26, index: 26, extreme: 102, close: 99.6, gap: null,
+        })]);
+        expect(detectRangeFakeouts(wick, { ...OPTS, requireGap: false })).toEqual([]);
+        expect(detectRangeFakeouts(wick, { ...wickOptions, requireGap: true })).toEqual([]);
+    });
+
+    it('mirrors a wick-only sweep below the range into a midpoint-confirmed long', () => {
+        const rows = [...LEAD, [100.5, 102, 99.3, 99.6] as Row];
+        expect(detectRangeFakeouts(bars(mirrored(rows)), wickOptions)).toEqual([expect.objectContaining({
+            direction: 'bull', top: 101, bottom: 99, middle: 100,
+            breakIndex: 26, index: 26, extreme: 98, close: 100.4,
+        })]);
+    });
+
+    it('waits for a closing midpoint cross after a wick enters the range on the near side', () => {
+        const rows: Row[] = [...LEAD, [100.5, 102, 100.2, 100.6], [100.6, 100.8, 99.4, 99.6]];
+        expect(detectRangeFakeouts(bars(rows.slice(0, 27)), wickOptions)).toEqual([]);
+        expect(detectRangeFakeouts(bars(rows), wickOptions)[0]).toMatchObject({ breakIndex: 26, index: 27 });
+    });
+
+    it('does not infer the order of two opposing wick sweeps from one OHLC bar', () => {
+        const rows: Row[] = [...LEAD, [100.5, 102, 98, 99.6], [99.6, 100, 99.2, 99.4]];
+        expect(detectRangeFakeouts(bars(rows), wickOptions)).toEqual([]);
+    });
+
+    it('keeps a confirmed wick setup unchanged when future extremes arrive', () => {
+        const expected = detectRangeFakeouts(wick.slice(0, 27), wickOptions);
+        const future = [...wick, ...bars([[99.4, 150, 50, 110]]).map(b => ({ ...b, time: wick[27]!.time + MINUTE }))];
+        expect(expected).toHaveLength(1);
+        expect(detectRangeFakeouts(future, wickOptions).filter(s => s.index <= 26)).toEqual(expected);
+    });
+
+    it('does not confirm a wick setup across a missing-bar gap', () => {
+        const rows: Row[] = [...LEAD, [100.5, 102, 100.2, 100.6], [100.6, 100.8, 99.4, 99.6]];
+        const missing = bars(rows).map((b, i) => ({ ...b, time: b.time + (i >= 27 ? 60 * MINUTE : 0) }));
+        expect(detectRangeFakeouts(missing, wickOptions)).toEqual([]);
+    });
+
     it('finds the close back through the middle after a gap beyond the broken edge', () => {
         const [setup, ...rest] = detectRangeFakeouts(bars(FAKEOUT), OPTS);
         expect(rest).toEqual([]);

@@ -30,6 +30,20 @@ const VIEW = { rangeColor: '#888888', bullColor: '#00aa88', bearColor: '#ee3344'
 describe('range fakeout native indicator', () => {
     const setups = detectRangeFakeouts(SERIES, { range: { minBars: 5 } });
 
+    it('draws a midpoint-confirmed wick setup with the gap condition disabled', () => {
+        const series = SERIES.slice(0, 26).concat([
+            { time: TIMES[26]!, open: 100.5, high: 102, low: 99.3, close: 99.6, volume: 1 },
+            { time: TIMES[27]!, open: 99.6, high: 100, low: 99.2, close: 99.4, volume: 1 },
+        ]);
+        const found = detectRangeFakeouts(series, { range: { minBars: 5, breakMode: 'wick' }, requireGap: false });
+        const output = buildRangeFakeoutOutput(projectRangeFakeouts(found, series, 'fixed', 1.5, 0), series.map(b => b.time), VIEW);
+        expect(output.boxes!.filter(b => b.id.endsWith('_range'))).toHaveLength(1);
+        expect(output.boxes!.some(b => b.id.endsWith('_gap'))).toBe(false);
+        expect(output.lines!.find(l => l.id.endsWith('_middle'))).toMatchObject({ y1: 100, x2: TIMES[26] });
+        expect(output.labels![0]).toMatchObject({ text: 'Fakeout short', x: TIMES[26] });
+        expect(rangeFakeoutDescriptor.inputsSchema().map(f => f.key)).toEqual(expect.arrayContaining(['breakMode', 'requireGap']));
+    });
+
     it('draws the range, its middle, the gap, the fakeout extreme and the resolved trade', () => {
         const trades = projectRangeFakeouts(setups, SERIES, 'range', 2, 0.5);
         expect(trades).toEqual([expect.objectContaining({ target: 99, outcome: 'target', exitTime: TIMES[31] })]);

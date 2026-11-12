@@ -1,8 +1,10 @@
 import { Menu, type MenuItemDescriptor } from '../../../src/ui';
+import { forEachCell } from '../shell/eachCell';
+import { singleMarket, trackAccountCharts, type InstrumentOf } from './accountCharts';
 import { registerWidgetAction, type WidgetContext } from '../../../src/plugin';
 import type { ThemeName, VelaTheme } from '../../../src';
 import type { VelaWorkspace } from '../../../src/workspace';
-import { PaperController } from './PaperController';
+import { PaperAccount, type PaperAccountExtra } from './PaperAccount';
 import { mountPaperTrading, type PaperMount } from './paperMount';
 import { loadPaperSettings, needsFreshAccount, savePaperSettings, type PaperSettings } from './paperSettings';
 import { openPaperSettings } from './paperSettingsDialog';
@@ -23,12 +25,17 @@ import { formatMoney } from '../format';
 import { leftArmedMarket, leftBehindNotice, loadAccountMarket, marketForAccount, saveAccountMarket } from './accountMarkets';
 
 /**
- * The Trade menu — which broker, if any, the chart is wired to.
+ * The Trade menu — which broker, if any, the app is trading through.
  *
- * A chart is a chart. Everything about trading one — the account card, the ticket,
- * the dock, the levels a position draws — is off until somebody says otherwise, and
- * the first entry in the menu says otherwise back: Just Watching returns the chart to
- * being only a chart, with the account left exactly where it was rather than closed.
+ * A chart is a chart. Everything about trading — the account card, the ticket, the dock,
+ * the levels a position draws — is off until somebody says otherwise, and the first entry in
+ * the menu says otherwise back: Just Watching returns the charts to being only charts, with
+ * the account left exactly where it was rather than closed.
+ *
+ * The account is a mode of the app, not a property of one chart. It has one market, and every
+ * chart showing that market is a place to trade it (see accountCharts.ts); a chart that moves
+ * elsewhere simply stops being one. Alone on the screen, a chart is the account's only view and
+ * the account follows it, as it always has.
  *
  * Paper trading is the first broker in the list, and a real Capital.com account is the
  * second where the credentials for one exist. They are the same shape of entry on purpose —
@@ -74,11 +81,11 @@ export interface TradeModeHandle {
     /**
      * The paper account being traded right now, or null on Just Watching.
      *
-     * For a screen that READS the account — the Analysis tab. The running controller is
+     * For a screen that READS the account — the Analysis tab. The running account is
      * ahead of the stored record by up to a write interval, and a second screen showing the
      * older of two answers about the same account is the drift this exists to avoid.
      */
-    readonly account: PaperController | null;
+    readonly account: PaperAccount | null;
     /** Current facts for the app-level account strip. */
     summary(): TradeAccountSummary;
     /** Open the same account menu as the chart action, anchored to the app title bar. */
@@ -122,7 +129,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
 
     let settings: PaperSettings = loadPaperSettings();
     let broker: TradeBroker = 'off';
-    let controller: PaperController | null = null;
+    let paper: PaperAccount | null = null;
     let mount: PaperMount | null = null;
     let live: CapitalController | null = null;
     let liveMount: CapitalMount | null = null;
@@ -155,13 +162,53 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
      *  the first. */
     let starting = false;
 
+    /** The market of the armed venue account, or '' — a paper account states its own. */
+    let armedSymbol = '';
+    /** What the armed venue account is, for putting it on another chart's market. */
+    let armed: {
+        account: string;
+        provider: string;
+        on: { provider: string; ticker: string } | null;
+        rearm: () => Promise<void>;
+    } | null = null;
+
+    /** One name for a market however a chart writes it — what tells two charts of one market apart
+     *  from two markets. */
+    const canonicalOf = (symbol: string): string => {
+        const resolved = ws.chart.data.resolve(symbol);
+        return resolved ? resolved.provider + ':' + resolved.ticker.toUpperCase() : symbol;
+    };
+
+    /* A paper account trades every market a chart shows, each as its own leg; a venue account has
+     * the one market it was armed on, and only the charts showing it are places to trade it. */
+    const venueMarket = singleMarket(() => armedSymbol);
+    const instrumentOf: InstrumentOf = (cell) => {
+        if (!paper) return venueMarket(cell);
+        const symbol = cell.chart.market.symbol;
+        const resolved = symbol ? cell.chart.data.resolve(symbol) : null;
+        // A chart-only feed has nothing to trade on, and an unknown symbol has nothing to feed it.
+        if (!symbol || !resolved || resolved.provider === 'experimental') return null;
+        return canonicalOf(symbol);
+    };
+    const charts = trackAccountCharts(ws, instrumentOf);
+
+    /**
+     * Keep the symbol search to the armed venue — but only while one chart is the whole view.
+     * Alone, a symbol from anywhere else is one the account has no way to trade and the chart
+     * would have nothing to show it on; among several, the other charts are free to watch
+     * anything and the account keeps its market.
+     */
+    function syncScope(): void {
+        ws.setSymbolScope(armed && ws.cells().length === 1 ? [armed.provider] : null);
+    }
+
     let menu: Menu | null = null;
     let menuOpen = false;
     let closedAt = 0;
 
     /** The account as it stands, on its way to storage. */
     const persist = (): void => {
-        if (controller) writer.schedule(controller.snapshot());
+        if (paper) writer.schedule(paper.snapshot());
     };
 
     function items(): MenuItemDescriptor[] {
@@ -248,6 +295,13 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
                 });
             });
         }
+        /* An armed account stays on its market while the charts move about. This puts it on the
+         * market of the chart that has the focus — the one entry that moves it deliberately. */
+        const here = ws.active.chart.market.symbol;
+        if (broker !== 'off' && broker !== 'paper' && here && !charts.matching().includes(ws.active)) {
+            const name = ws.active.chart.data.resolve(here)?.ticker ?? here;
+            list.push({ id: 'here', label: 'Trade ' + name + ' on this account instead', separatorBefore: true });
+        }
         return list;
     }
 
@@ -271,9 +325,11 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
     }
 
     /**
-     * Put the chart on the market an account was just armed on, and keep the search to that
-     * venue while it is: a symbol from anywhere else is one the account has no way to trade.
-     * Called after the confirmation, so a "no" leaves the chart exactly where it was.
+     * Show the market an account was just armed on, and keep the search to that venue while one
+     * chart is all there is: a symbol from anywhere else is one the account has no way to trade.
+     * Called after the confirmation, so a "no" leaves the charts exactly where they were.
+     *
+     * A chart already on the market stays as it is; otherwise the active one goes there.
      *
      * `rearm` is how this account is armed again — what a move to another instrument calls.
      */
@@ -283,24 +339,51 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         market: { symbol: string; timeframe: string | null },
         rearm: () => Promise<void>,
     ): void {
-        ws.active.setSymbol(market.symbol);
-        if (market.timeframe) ws.active.setTimeframe(market.timeframe);
-        ws.setSymbolScope([provider]);
         const armedOn = ws.chart.data.resolve(market.symbol);
-        const remember = (): void => {
-            const { symbol, timeframe } = ws.chart.market;
-            if (!symbol || !timeframe || ws.chart.data.resolve(symbol)?.provider !== provider) return;
-            saveAccountMarket(account, { symbol, timeframe });
-        };
-        remember();
-        /* Compared with the instrument the account was ARMED on, not with the event's previous
-         * symbol: the switch this function just asked for lands as an event of its own, after
-         * the listener is already here, and must not read as the chart moving away. */
-        forgetMarket = ws.chart.on('market:changed', ({ symbol }) => {
-            remember();
-            if (!leftArmedMarket(armedOn, ws.chart.data.resolve(symbol))) return;
+        armedSymbol = market.symbol;
+        armed = { account, provider, on: armedOn, rearm };
+        charts.refresh();
+        if (charts.matching().length === 0) {
+            ws.active.setSymbol(market.symbol);
+            if (market.timeframe) ws.active.setTimeframe(market.timeframe);
+        }
+        syncScope();
+        const timeframe = market.timeframe ?? charts.matching()[0]?.chart.market.timeframe ?? ws.chart.market.timeframe;
+        if (timeframe) saveAccountMarket(account, { symbol: market.symbol, timeframe });
+        /* Only a lone chart is the account's view of its market: it is remembered where it goes,
+         * and leaving the armed instrument takes the account off to be armed again. With several
+         * on screen a chart moving away is no business of the account's. Compared with the
+         * instrument the account was ARMED on, not with the event's previous symbol: the switch
+         * this function just asked for lands as an event of its own, after the listener is
+         * already here, and must not read as the chart moving away. */
+        forgetMarket = forEachCell(ws, (cell) => cell.chart.on('market:changed', ({ symbol }) => {
+            if (ws.cells().length !== 1) return;
+            const { symbol: shown, timeframe: frame } = cell.chart.market;
+            if (shown && frame && cell.chart.data.resolve(shown)?.provider === provider) {
+                saveAccountMarket(account, { symbol: shown, timeframe: frame });
+            }
+            if (!leftArmedMarket(armedOn, cell.chart.data.resolve(symbol))) return;
             leaveAccountMarket(armedOn?.ticker ?? symbol, rearm);
-        });
+        }));
+    }
+
+    /** Put the armed account on the market of the chart that has the focus. */
+    function moveAccountHere(): void {
+        const symbol = ws.active.chart.market.symbol;
+        if (broker === 'off' || broker === 'paper' || !symbol) return;
+        if (chartOnlyMarket(symbol)) {
+            ws.toast('This experimental feed is chart-only. An account cannot trade it.', 'error');
+            return;
+        }
+        if (!armed) return;
+        const resolved = ws.active.chart.data.resolve(symbol);
+        if (resolved?.provider !== armed.provider) {
+            ws.toast('This account trades ' + armed.provider + ' markets only — ' + symbol + ' is not one.', 'error');
+            return;
+        }
+        const timeframe = ws.active.chart.market.timeframe;
+        if (timeframe) saveAccountMarket(armed.account, { symbol, timeframe });
+        leaveAccountMarket(armed.on?.ticker ?? symbol, armed.rearm);
     }
 
     /**
@@ -365,6 +448,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
                 stack: opts.stack,
                 main: opts.main,
                 controller: spot,
+                charts,
                 settings: () => settings,
                 onSettings: (next) => void applySettings(next).catch(report),
                 theme: opts.theme(),
@@ -435,6 +519,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
                 stack: opts.stack,
                 main: opts.main,
                 controller: bybit,
+                charts,
                 settings: () => settings,
                 onSettings: (next) => void applySettings(next).catch(report),
                 theme: opts.theme(),
@@ -514,6 +599,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
                 stack: opts.stack,
                 main: opts.main,
                 controller: projectx,
+                charts,
                 /* The same key the market and the limits are both remembered under, so one
                  * account's floor can never end up over another's chart. */
                 accountKey,
@@ -578,6 +664,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
                 stack: opts.stack,
                 main: opts.main,
                 controller: live,
+                charts,
                 accountKey,
                 settings: () => settings,
                 onSettings: (next) => void applySettings(next).catch(report),
@@ -639,7 +726,8 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
     }
 
     async function openPaper(): Promise<void> {
-        if (chartOnlyMarket(ws.chart.market.symbol ?? '')) {
+        // With nothing but chart-only feeds on screen there is no market to trade at all.
+        if (ws.cells().every((cell) => chartOnlyMarket(cell.chart.market.symbol ?? ''))) {
             stop();
             ws.toast('This experimental feed is chart-only. Paper trading stays off.', 'error');
             return;
@@ -664,30 +752,26 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         stop();
 
         /* Undefined only before the chart has resolved a market at all — which is not a
-         * moment anybody can click this menu in, but the account has to be bound to
-         * SOMETHING, and the stored market is a better guess than an empty string. */
+         * moment anybody can click this menu in, but the account has to open on SOMETHING,
+         * and the stored market is a better guess than an empty string. */
         const chartSymbol = ws.chart.market.symbol ?? stored?.symbol ?? '';
-        controller = new PaperController({
-            symbol: stored?.symbol ?? chartSymbol,
+        paper = new PaperAccount({
             settings,
-            restore: stored?.session,
+            canonical: canonicalOf,
+            ...(stored
+                ? { restore: { symbol: stored.symbol, session: stored.session, extra: (stored.extra ?? null) as PaperAccountExtra | null } }
+                : { symbol: chartSymbol }),
             onPersist: persist,
             // The account on screen; one a bot trades in the background stays quiet.
             chime: true,
         });
 
-        /* A stored account that was left on another market moves to this one if it is
-         * holding nothing. Holding something, it stays where its money is — and says so
-         * once, here, rather than only when the first order is refused. */
-        if (controller.symbol !== chartSymbol && !controller.follow(chartSymbol)) {
-            ws.toast(controller.refusal ?? '', 'info');
-        }
-
         mount = mountPaperTrading({
             workspace: ws,
             stack: opts.stack,
             main: opts.main,
-            controller,
+            account: paper,
+            charts,
             settings: () => settings,
             onSettings: (next) => void applySettings(next).catch(report),
             theme: opts.theme(),
@@ -703,7 +787,9 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         if (broker === 'off') return;
         forgetMarket?.();
         forgetMarket = null;
-        ws.setSymbolScope(null);
+        armedSymbol = '';
+        armed = null;
+        syncScope();
         if (broker === 'capital') {
             liveMount?.unmount();
             liveMount = null;
@@ -740,7 +826,8 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         mount = null;
         persist();
         writer.flush(); // the write is in flight; the account itself is already complete
-        controller = null;
+        paper = null;
+        charts.refresh();
         broker = 'off';
         saveActiveBroker(broker);
     }
@@ -758,13 +845,18 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
      */
     async function freshAccount(): Promise<void> {
         const wasOn = broker === 'paper';
-        const finished = controller;
+        const finished = paper;
         writer.cancel();
 
-        if (finished && finished.broker.trades.length > 0) {
+        if (finished && finished.tradeCount > 0) {
             try {
-                const id = await archive(finished);
-                ws.toast(`Paper account filed as a run (${id}) — starting a fresh one`, 'success');
+                const ids = await archive(finished);
+                ws.toast(
+                    ids.length === 1
+                        ? `Paper account filed as a run (${ids[0]}) — starting a fresh one`
+                        : `Paper account filed as ${ids.length} runs, one per market — starting a fresh one`,
+                    'success',
+                );
             } catch (err: unknown) {
                 /* Nothing is thrown away on a failed archive: the account stays exactly where
                  * it is, and the person can try again or close the position first. Thrown
@@ -780,24 +872,37 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         if (wasOn) {
             mount?.unmount();
             mount = null;
-            controller = null;
+            paper = null;
             broker = 'off';
+            charts.refresh();
         }
         await clearPaperAccount();
         if (wasOn) await startPaper();
     }
 
-    /** Put a finished account on the run shelf, and answer with the id it got. */
-    async function archive(finished: PaperController): Promise<string> {
-        const { id } = await window.midori.replay.save({
-            // What traded it, so the library does not file a live paper account as a replay.
-            source: 'paper',
-            symbol: finished.symbol,
-            timeframe: ws.chart.market.timeframe ?? '60',
-            note: `Paper account, opened ${new Date(finished.openedAt).toISOString().slice(0, 10)}`,
-            ...finished.result(ws.chart.market.timeframe ?? null),
-        });
-        return id;
+    /**
+     * Put a finished account on the run shelf, and answer with the ids it got.
+     *
+     * One run per market: the library files a run under one symbol, and a result with a single
+     * market's trades is the only kind it can be compared against. The money is the account's in
+     * each — what a market did to it on its own books.
+     */
+    async function archive(finished: PaperAccount): Promise<string[]> {
+        const timeframe = ws.chart.market.timeframe ?? '60';
+        const ids: string[] = [];
+        for (const leg of finished.legs()) {
+            if (leg.broker.trades.length === 0) continue;
+            const { id } = await window.midori.replay.save({
+                // What traded it, so the library does not file a live paper account as a replay.
+                source: 'paper',
+                symbol: leg.symbol,
+                timeframe,
+                note: `Paper account, opened ${new Date(finished.openedAt).toISOString().slice(0, 10)}`,
+                ...leg.result(timeframe),
+            });
+            ids.push(id);
+        }
+        return ids;
     }
 
     /**
@@ -817,7 +922,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
     function openSettings(): void {
         void openPaperSettings(ws.root, {
             settings,
-            trades: controller?.broker.trades.length ?? 0,
+            trades: paper?.tradeCount ?? 0,
             onResetAccount: () => void freshAccount().catch(report),
         })
             .then((result) => {
@@ -850,6 +955,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
                 else if (id === 'paper') void startPaper().catch(report);
                 else if (id === 'capital') void startCapital().catch(report);
                 else if (id === 'capital:swap') void swapCapital().catch(report);
+                else if (id === 'here') moveAccountHere();
                 else if (id === 'binance-spot') void startBinanceSpot().catch(report);
                 else if (id === 'bybit') void startBybit().catch(report);
                 else if (id.startsWith('projectx:')) void startProjectX(Number(id.slice('projectx:'.length))).catch(report);
@@ -932,12 +1038,17 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
 
     /* A running paper account must not follow the chart onto a display-only feed. This
      * listener is installed before any paper mount, so stopping it also removes that
-     * mount's later market-change listener before it can consume the new series. */
-    const offChartOnlyMarket = ws.chart.on('market:changed', ({ symbol }) => {
-        if (broker === 'off' || !chartOnlyMarket(symbol)) return;
+     * mount's later market-change listener before it can consume the new series. Only a lone
+     * chart makes the account follow it: among several, a chart-only market is just a chart. */
+    const offChartOnlyMarket = forEachCell(ws, (cell) => cell.chart.on('market:changed', ({ symbol }) => {
+        // A paper account has no market of its own to follow: such a chart is just not one to trade.
+        if (broker === 'off' || broker === 'paper' || ws.cells().length !== 1 || !chartOnlyMarket(symbol)) return;
         stop();
         ws.toast('Trading was turned off because this experimental feed is chart-only.', 'info');
-    });
+    }));
+
+    /* Going to one chart or to several changes whether the symbol search is held to the venue. */
+    const offLayout = ws.on('layout:changed', syncScope);
 
     /*
      * Back into the mode this machine was left in, once the chart has a market and a price
@@ -982,18 +1093,19 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         writer.flush();
     });
     void offChartOnlyMarket;
+    void offLayout;
 
     const openPnl = (book: { positions: ReadonlyArray<{ unrealized: number }> }): number => (
         book.positions.reduce((sum, position) => sum + position.unrealized, 0)
     );
 
     function summary(): TradeAccountSummary {
-        if (broker === 'paper' && controller) {
-            const account = controller.account();
+        if (broker === 'paper' && paper) {
+            const account = paper.account();
             return {
                 broker,
                 label: 'Paper',
-                detail: controller.symbol,
+                detail: paper.title,
                 live: false,
                 currency: null,
                 balance: account.cash,
@@ -1077,8 +1189,8 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
         get broker(): TradeBroker {
             return broker;
         },
-        get account(): PaperController | null {
-            return controller;
+        get account(): PaperAccount | null {
+            return paper;
         },
         summary,
         openAccountMenu,
@@ -1086,7 +1198,7 @@ export function installTradeMenu(opts: TradeModeOptions): TradeModeHandle {
             return settings;
         },
         get tradeCount(): number {
-            return controller?.broker.trades.length ?? 0;
+            return paper?.tradeCount ?? 0;
         },
         stop,
         applySettings,

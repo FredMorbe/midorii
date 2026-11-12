@@ -3,6 +3,7 @@ import type { RunnableStrategy } from '../../../shared/engine/backtest';
 import { riskManagement } from '../../../shared/strategies/risk.js';
 import type { DetectionCache } from './detection';
 import { RANGE_FAKEOUT_STRATEGY } from './rangeFakeout';
+import { NQ_AMD_WICK_1M, NQ_AMD_WICK_3M } from './nqAmdWick';
 import { AMD_CYCLES_STRATEGY } from './amdCycles';
 import { AMD_FVG_STRATEGY } from './amdFvg';
 import { AW_REVERSAL_STRATEGY } from './awReversal';
@@ -15,7 +16,9 @@ import { RSI_DIP_STRATEGY } from './rsiDip';
 import { SILVER_BULLET_STRATEGY } from './silverBullet';
 import { TIME_BASED_RANGE_STRATEGY } from './timeBasedRange';
 import { VWAP_REVERSION_STRATEGY } from './vwapReversion';
-import type { StrategyInfo, StrategyParam, StrategyParams, StrategyParamValue, StrategySpec } from './types';
+import type { StrategyInfo, StrategyParam, StrategyParams, StrategyParamValue, StrategySpec, StrategyBuildOptions } from './types';
+import { ruleStrategySpec } from './ruleStrategy';
+import type { RuleStrategy } from '../../../shared/strategies/rules.js';
 
 /**
  * The strategies this app can run, and the one way of turning settings into a runnable one.
@@ -46,7 +49,22 @@ export const STRATEGIES: Record<string, StrategySpec> = {
     morningbook: MORNING_BOOK_STRATEGY,
     rsidip: RSI_DIP_STRATEGY,
     vwapreversion: VWAP_REVERSION_STRATEGY,
+    nq_amd_wick_1m: NQ_AMD_WICK_1M,
+    nq_amd_wick_3m: NQ_AMD_WICK_3M,
 };
+
+const BUILT_IN_IDS = new Set(Object.keys(STRATEGIES));
+let ruleDefinitions: RuleStrategy[] = [];
+
+export function getRuleStrategies(): RuleStrategy[] { return structuredClone(ruleDefinitions); }
+
+/** Replace research descriptors atomically; built-in strategies cannot be overwritten. */
+export function setRuleStrategies(rules: readonly RuleStrategy[]): void {
+    const specs = rules.map(ruleStrategySpec);
+    ruleDefinitions = structuredClone([...rules]);
+    for (const [id, spec] of Object.entries(STRATEGIES)) if (spec.researchOnly && !BUILT_IN_IDS.has(id)) delete STRATEGIES[id];
+    for (const spec of specs) STRATEGIES[spec.id] = spec;
+}
 
 function specFor(id: string): StrategySpec {
     const spec = STRATEGIES[id];
@@ -142,13 +160,16 @@ export function buildStrategy(
     params: Readonly<Record<string, unknown>>,
     bars: readonly OHLCV[],
     cache?: DetectionCache,
+    options?: StrategyBuildOptions,
 ): RunnableStrategy<StrategyParams> {
-    const resolved = resolveStrategyParams(id, params);
+    const spec = options?.definition ? ruleStrategySpec(options.definition) : specFor(id);
+    if (spec.id !== id) throw new Error('The saved rule definition belongs to a different strategy.');
+    const resolved = resolveParams(spec.params, params, id);
     /* Break-even and trailing are attached here rather than inside each strategy, for the
      * same reason risk is asked once: eight copies of "move the stop at 1R" would be eight
      * places for it to come to mean something slightly different. The account applies them
      * — see `management` in shared/engine/broker.js — so a strategy never has to notice. */
-    return { ...specFor(id).build(resolved, bars, cache), management: riskManagement(resolved) };
+    return { ...spec.build(resolved, bars, cache, options), management: riskManagement(resolved) };
 }
 
 /** One stored setting, ready to print: what it is called and what it was. */

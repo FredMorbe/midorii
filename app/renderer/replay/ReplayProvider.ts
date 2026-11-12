@@ -1,5 +1,5 @@
 import { timeframeToMs } from '../../../src';
-import type { BarRange, DataProvider, OHLCV, ProviderInfo } from '../../../src';
+import type { BarRange, DataProvider, OHLCV, ProviderInfo, SymbolDescriptor } from '../../../src';
 
 /**
  * Wraps a DataProvider (the local archive) and reveals bars only up to a moving
@@ -21,7 +21,9 @@ import type { BarRange, DataProvider, OHLCV, ProviderInfo } from '../../../src';
 export class ReplayProvider implements DataProvider {
     private cutoff: number;
     private timeframe: string;
-    private onBarCb: ((bar: OHLCV) => void) | null = null;
+    /* More than one chart can be on the same provider for a moment — a chart added to the grid
+     * opens on its neighbour's market before it is given its own. */
+    private readonly listeners = new Set<(bar: OHLCV) => void>();
 
     /**
      * @param name the registry name this provider is registered under — `info().name`
@@ -29,12 +31,15 @@ export class ReplayProvider implements DataProvider {
      *   Vela's symbol grammar parses that prefix as `[A-Za-z0-9_.]+`: a name outside
      *   that alphabet (a hyphen, say) fails to parse silently and the chart never
      *   resolves a provider at all, so the caller must stay within it.
+     * @param lists whether the symbol search offers the archive's markets under this provider.
+     *   One provider per window says so, or every market would be listed once per chart.
      */
     constructor(
         private readonly archive: DataProvider,
         private readonly name: string,
         timeframe: string,
         startCutoff: number,
+        private readonly lists = true,
     ) {
         this.timeframe = timeframe;
         this.cutoff = startCutoff;
@@ -48,8 +53,14 @@ export class ReplayProvider implements DataProvider {
             // Whatever the archive underneath can serve: a replay does not pin the
             // chart to one resolution, it pins it to one moment in time.
             supportedTimeframes: this.archive.info?.().supportedTimeframes,
-            capabilities: { enumerate: false, stream: true, symbolInfo: false },
+            capabilities: { enumerate: this.lists, stream: true, symbolInfo: false },
         };
+    }
+
+    /** The markets the archive holds — what the symbol search can offer. The clock still decides
+     *  how much of any of them is ever shown. */
+    async listSymbols(): Promise<SymbolDescriptor[]> {
+        return this.lists && this.archive.listSymbols ? this.archive.listSymbols() : [];
     }
 
     /**
@@ -72,8 +83,8 @@ export class ReplayProvider implements DataProvider {
     }
 
     subscribe(_ticker: string, _timeframe: string, onBar: (bar: OHLCV) => void): () => void {
-        this.onBarCb = onBar;
-        return () => { this.onBarCb = null; };
+        this.listeners.add(onBar);
+        return () => { this.listeners.delete(onBar); };
     }
 
     /**
@@ -87,7 +98,7 @@ export class ReplayProvider implements DataProvider {
             throw new Error(`revealNext went backwards: bar ${new Date(bar.time).toISOString()} predates the replay clock`);
         }
         this.cutoff = bar.time + timeframeToMs(this.timeframe);
-        this.onBarCb?.(bar);
+        for (const listener of this.listeners) listener(bar);
     }
 
     /**
@@ -103,6 +114,6 @@ export class ReplayProvider implements DataProvider {
             throw new Error(`revealForming went backwards: bar ${new Date(bar.time).toISOString()} predates the replay clock`);
         }
         this.cutoff = clock;
-        this.onBarCb?.(bar);
+        for (const listener of this.listeners) listener(bar);
     }
 }

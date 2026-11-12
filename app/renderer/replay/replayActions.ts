@@ -1,4 +1,5 @@
 import { registerIcon, registerWidgetAction } from '../../../src/plugin';
+import type { Vela } from '../../../src';
 import type { VelaWorkspace } from '../../../src/workspace';
 import { SPEEDS, type ReplayController } from './ReplayController';
 import { armOrderTool } from './replayOrders';
@@ -20,6 +21,8 @@ let active: ActiveReplay | null = null;
 export interface ActiveReplay {
     controller: ReplayController;
     ws: VelaWorkspace;
+    /** The chart the session trades on. The window's other charts only watch its clock. */
+    primary: () => Vela;
 }
 
 const ICONS: Record<string, string> = {
@@ -43,9 +46,15 @@ function ensureIcons(): void {
     for (const [id, markup] of Object.entries(ICONS)) registerIcon(id, markup);
 }
 
-/** The gate: an action is only shown on the chart its session drives. */
+/** The gate: an action is only shown in the window its session drives — on any chart of it, since
+ *  the clock belongs to the session and not to one chart. */
 function onActiveChart(ctx: { chart: unknown }): boolean {
-    return active != null && active.ws.chart === ctx.chart;
+    return active != null && active.ws.cells().some((cell) => cell.chart === ctx.chart);
+}
+
+/** The gate for what is about the market the session trades: only its own chart answers it. */
+function onTradingChart(ctx: { chart: unknown }): boolean {
+    return active != null && active.primary() === ctx.chart;
 }
 
 /**
@@ -58,7 +67,7 @@ function onActiveChart(ctx: { chart: unknown }): boolean {
  * above already does, for the same reason.
  */
 export function isReplayContext(ctx: { readonly chart: unknown }): boolean {
-    return active != null && active.ws.chart === ctx.chart;
+    return active != null && active.ws.cells().some((cell) => cell.chart === ctx.chart);
 }
 
 /** Put a failed transport call in front of the person who pressed it. */
@@ -201,10 +210,10 @@ function registerControls(): void {
         iconOnly: true,
         label: 'Draw an order',
         icon: 'replay-order',
-        when: onActiveChart,
+        when: onTradingChart,
         run: (ctx) => {
             if (!active) return;
-            armOrderTool(active.ws.chart);
+            armOrderTool(active.primary());
             ctx.toast('Click the entry, drag to the target — then right-click the block to order');
         },
     });
@@ -290,7 +299,7 @@ function registerJumpHere(): void {
         id: 'replay.setupStrategy',
         target: 'context:body',
         label: 'Next setup: choose strategy…',
-        when: onActiveChart,
+        when: onTradingChart,
         run: (ctx) => {
             if (!active) return;
             void askSetupStrategy(active.ws.root, loadSetupStrategy()).then((id) => {
@@ -305,7 +314,7 @@ function registerJumpHere(): void {
         id: 'replay.jumpHere',
         target: 'context:body',
         label: 'Jump back here',
-        when: (ctx) => onActiveChart(ctx) && lastCrosshairTime() != null,
+        when: (ctx) => onTradingChart(ctx) && lastCrosshairTime() != null,
         run: (ctx) => {
             const time = lastCrosshairTime();
             if (!active || time == null) return;

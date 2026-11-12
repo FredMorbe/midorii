@@ -15,7 +15,7 @@
  * comparing them is the entire reason to run a strategy live after testing it. This file
  * only holds the account that is still running.
  */
-import { readFile, writeFile, rename, mkdir, unlink, readdir } from 'node:fs/promises';
+import { readFile, open, rename, mkdir, unlink, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 /** The shape this version writes. Version 2 adds guards and live-broker ownership. */
@@ -38,8 +38,38 @@ function accountFile(dir, id) {
 async function writeAtomic(file, data) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
-  await writeFile(tmp, JSON.stringify(data), 'utf8');
-  await rename(tmp, file);
+  /* On the device before the rename. A rename that lands ahead of its data leaves an empty
+   * file behind a power cut, and an empty runtime is one the bot refuses to start on. */
+  const handle = await open(tmp, 'w');
+  try {
+    await handle.writeFile(JSON.stringify(data), 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await renameOver(tmp, file);
+}
+
+/** Codes Windows answers with while a scanner or indexer briefly holds the target open. */
+const TRANSIENT_RENAME = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/**
+ * Replace `file` with `tmp`, waiting out a target that is momentarily held open.
+ *
+ * A failed write blocks a bot's new entries until it is restarted, which is the right
+ * answer to a disk that cannot be written and the wrong one to a file another process
+ * had open for a few milliseconds.
+ */
+async function renameOver(tmp, file) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(tmp, file);
+      return;
+    } catch (err) {
+      if (attempt >= 4 || !TRANSIENT_RENAME.has(err?.code)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 function finite(value) {
@@ -81,15 +111,60 @@ function readOwnership(value) {
     || !Array.isArray(value.workingOrderDealIds)
     || !value.workingOrderDealIds.every((id) => typeof id === 'string' && id.length > 0)
     || typeof value.uncertain !== 'boolean'
+    || (value.accountId != null && (typeof value.accountId !== 'string' || !value.accountId))
+    || (value.environment != null && value.environment !== 'demo' && value.environment !== 'live')
   ) {
     throw new Error('the Capital.com ownership state is invalid');
   }
   return {
+    ...(value.accountId ? { accountId: value.accountId } : {}),
+    ...(value.environment ? { environment: value.environment } : {}),
     initialized: value.initialized,
     positionDealIds: [...new Set(value.positionDealIds)],
     workingOrderDealIds: [...new Set(value.workingOrderDealIds)],
     uncertain: value.uncertain,
   };
+}
+
+function plainObject(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readStrategy(value) {
+  if (value == null) return undefined;
+  if (
+    !plainObject(value)
+    || typeof value.key !== 'string'
+    || !plainObject(value.state)
+    || !Array.isArray(value.anchors)
+    || value.anchors.length === 0
+    || value.anchors.length > 16
+    || !value.anchors.every((pair) => (
+      Array.isArray(pair) && pair.length === 2 && Number.isInteger(pair[0]) && pair[0] >= 0 && finite(pair[1])
+    ))
+    || !(value.orderIds == null || (Array.isArray(value.orderIds) && value.orderIds.every((pair) => (
+      Array.isArray(pair) && pair.length === 2 && Number.isInteger(pair[0]) && pair[0] > 0
+      && typeof pair[1] === 'string' && pair[1].length > 0
+    ))))
+  ) {
+    throw new Error('the strategy state is invalid');
+  }
+  return {
+    key: value.key,
+    state: value.state,
+    anchors: value.anchors.map(([index, time]) => [index, time]),
+    ...(value.orderIds ? { orderIds: value.orderIds.map(([id, dealId]) => [id, dealId]) } : {}),
+  };
+}
+
+/** A strategy state that cannot be read is dropped, not fatal: the bot then starts the way
+ *  it did before this was stored, and says what its strategy no longer remembers. */
+function readStoredStrategy(value) {
+  try {
+    return readStrategy(value);
+  } catch {
+    return undefined;
+  }
 }
 
 /** One bot's stored runtime, or null only where no record exists. */
@@ -116,6 +191,7 @@ export async function loadBotAccount(dir, id) {
     }
     const guards = readGuards(record.guards);
     const capital = readOwnership(record.capital);
+    const strategy = readStoredStrategy(record.strategy);
     if ('session' in record && record.session == null) {
       throw new Error('the paper account is invalid');
     }
@@ -127,6 +203,7 @@ export async function loadBotAccount(dir, id) {
       ...('session' in record ? { session: record.session } : {}),
       ...(guards ? { guards } : {}),
       ...(capital ? { capital } : {}),
+      ...(strategy ? { strategy } : {}),
       savedAt: finite(record.savedAt) ? record.savedAt : 0,
     };
   } catch (err) {
@@ -142,6 +219,7 @@ export async function saveBotAccount(dir, id, account) {
   }
   const guards = readGuards(account.guards);
   const capital = readOwnership(account.capital);
+  const strategy = readStrategy(account.strategy);
   if ('session' in account && account.session == null) {
     throw new Error('saveBotAccount: the paper account is invalid');
   }
@@ -154,6 +232,7 @@ export async function saveBotAccount(dir, id, account) {
     ...('session' in account ? { session: account.session } : {}),
     ...(guards ? { guards } : {}),
     ...(capital ? { capital } : {}),
+    ...(strategy ? { strategy } : {}),
     savedAt: Date.now(),
   };
   await writeAtomic(accountFile(dir, id), record);
@@ -187,4 +266,23 @@ export async function listBotAccounts(dir) {
     }
     return [];
   }
+}
+
+
+/** Preserve unresolved broker evidence when cleaning up accounts without a definition. */
+export async function sweepBotAccounts(dir, keep) {
+  if (!Array.isArray(keep)) throw new Error('Expected the list of bot ids to keep.');
+  const alive = new Set(keep.map(id => requireId(id).toLowerCase()));
+  let removed = 0;
+  for (const id of await listBotAccounts(dir)) {
+    if (alive.has(id.toLowerCase())) continue;
+    let account;
+    try { account = await loadBotAccount(dir, id); }
+    catch { continue; }
+    const owned = account?.capital;
+    if (owned && (owned.uncertain || owned.positionDealIds.length || owned.workingOrderDealIds.length)) continue;
+    await clearBotAccount(dir, id);
+    removed += 1;
+  }
+  return { removed };
 }

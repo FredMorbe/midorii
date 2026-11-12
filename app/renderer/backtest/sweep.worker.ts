@@ -1,5 +1,6 @@
 import { runSweep, SweepCancelled } from './sweepRunner';
 import { unpackBars, type SweepCommand, type SweepEvent } from './sweepProtocol';
+import { setRuleStrategies } from '../strategies';
 
 /**
  * The thread a sweep runs on.
@@ -40,6 +41,7 @@ self.onmessage = (message: MessageEvent<SweepCommand>) => {
     if (command.type !== 'run') return;
 
     const request = command.request;
+    setRuleStrategies(request.definitions ?? []);
     let lastProgress = 0;
 
     runSweep({

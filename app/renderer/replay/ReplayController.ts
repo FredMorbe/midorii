@@ -29,6 +29,13 @@ const TICK_FRAME_MS = 100;
  */
 const IDLE_SKIP_MS = 60_000;
 
+/** The charts beside the one that trades — what a parked session brings back with it. */
+export interface ReplayGrid {
+    layout: string;
+    /** Every chart but the first, by slot id. */
+    cells: Array<{ id: string; symbol: string; timeframe: string }>;
+}
+
 export interface ReplayControllerOptions {
     provider: ReplayProvider;
     /** Identity of what is being replayed — stored with the session and the run. */
@@ -130,10 +137,19 @@ export class ReplayController {
     private tickBusy = false;
     /** See {@link ReplayControllerOptions.onAccountChange}. */
     onAccountChange: (() => void) | null;
+    /** What the other charts of the window show, for a session that is put down. */
+    grid: (() => ReplayGrid) | null = null;
     /** Handed every print a tick stretch played, oldest first — for the tape and the ladder. */
     onPrints: ((prints: ReadonlyArray<[number, 1, number, number, 0 | 1 | null]>) => void) | null = null;
     /** Told once a jump has landed — the tape and the ladder describe a market that is gone. */
     onJump: (() => void) | null = null;
+    /**
+     * Told where the clock stands, every time the account is repainted. Charts that follow this
+     * session on other markets move with it: they only ever reveal what the clock has passed.
+     */
+    onClock: ((clock: number) => void) | null = null;
+    /** Told once a jump has put the clock BACK — what follows it has not happened yet. */
+    onRewind: ((clock: number) => void) | null = null;
 
     constructor(opts: ReplayControllerOptions) {
         this.provider = opts.provider;
@@ -212,6 +228,7 @@ export class ReplayController {
      * primitives only) — a deliberate workaround, not a Vela feature.
      */
     private pushState(): void {
+        this.onClock?.(this.current.clock);
         this.onAccountChange?.();
         if (!this.indicator) return;
         this.indicator.setInput(STATE_INPUT, JSON.stringify(visualState(this.current.broker, this.current.bar.close)));
@@ -488,6 +505,7 @@ export class ReplayController {
             if (rebuilt.mode === 'ticks' && !this.ticks) this.journal.recordMode(this.current.clock, 'bars');
             this.onJump?.();
             this.pushState();
+            this.onRewind?.(this.current.clock);
         } finally {
             this.jumping = false;
         }
@@ -700,6 +718,7 @@ export class ReplayController {
             session: this.current.snapshot(),
             journal: this.journal.toRecord(),
             ticks: this.ticks?.source ?? null,
+            ...(this.grid ? { grid: this.grid() } : {}),
             stats: {
                 bars: this.current.steps,
                 trades: broker.trades.length,

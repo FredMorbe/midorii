@@ -21,6 +21,7 @@ const STREAM_URL = 'wss://api-streaming-capital.backend-capital.com/connect';
 /** Both the REST and WS session expire 10 minutes after their last use; re-login
  *  this far before that so a slow request never lands on an already-dead session. */
 const SESSION_MARGIN_MS = 5 * 60_000;
+const REQUEST_TIMEOUT_MS = 15_000;
 /** Keep the WS's underlying session alive while a subscription is open. */
 const WS_PING_MS = 5 * 60_000;
 /** Reconnect backoff after an unexpected WebSocket close. */
@@ -51,6 +52,27 @@ let cst = null;
 let securityToken = null;
 let lastUsedAt = 0;
 let loginPromise = null;
+let configurationRevision = 0;
+let sessionAccountId = null;
+let requestGate = Promise.resolve();
+let lastRequestAt = 0;
+
+/** Pace all REST starts, including concurrent bot reads, below the shared ten-per-second limit. */
+async function requestSlot() {
+  const turn = requestGate.then(async () => {
+    const delay = lastRequestAt + 120 - Date.now();
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    lastRequestAt = Date.now();
+  });
+  requestGate = turn.catch(() => undefined);
+  await turn;
+}
+
+function requireRevision(expected) {
+  if (expected !== configurationRevision) {
+    throw new Error('The Capital.com connection changed. Restart and explicitly arm trading on the current account.');
+  }
+}
 
 let ws = null;
 let wsConnectPromise = null;
@@ -85,6 +107,9 @@ const quoteSubscribers = new Map();
 const streamed = new Set();
 
 export function configureCapital(next) {
+  configurationRevision += 1;
+  loginPromise = null;
+  sessionAccountId = null;
   creds = next && next.apiKey && next.identifier && next.password
     ? { apiKey: next.apiKey, identifier: next.identifier, password: next.password, env: next.env === 'live' ? 'live' : 'demo' }
     : null;
@@ -110,7 +135,7 @@ export function capitalConfigured() {
  * of the two it is wired to.
  */
 export function capitalEnvironment() {
-  return { configured: !!creds, env: creds?.env ?? null, live: creds?.env === 'live' };
+  return { configured: !!creds, env: creds?.env ?? null, live: creds?.env === 'live', revision: configurationRevision };
 }
 
 /**
@@ -129,10 +154,12 @@ export function capitalEnvironment() {
  */
 export async function switchCapitalEnvironment(next) {
   if (!creds) throw new Error('Capital.com is not connected — add the account under Settings → Broker connection.');
+  const revision = configurationRevision;
   const env = next === 'live' ? 'live' : 'demo';
   const accounts = await capitalProbe({ ...creds, env });
   /* Only an actual change goes through `configureCapital`, which drops the session and the
    * socket with it. Asked for the account already on, this confirms it and disturbs nothing. */
+  requireRevision(revision);
   if (creds.env !== env) configureCapital({ ...creds, env });
   return { env, accounts };
 }
@@ -176,16 +203,29 @@ async function sessionFailure(res, env) {
 }
 
 async function login() {
+  const revision = configurationRevision;
+  const credentials = creds;
+  await requestSlot();
+  requireRevision(revision);
   const res = await fetch(`${baseUrl()}/session`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     method: 'POST',
-    headers: { 'X-CAP-API-KEY': creds.apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier: creds.identifier, password: creds.password }),
+    headers: { 'X-CAP-API-KEY': credentials.apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identifier: credentials.identifier, password: credentials.password }),
   });
+  requireRevision(revision);
   const cstHeader = res.headers.get('cst');
   const tokenHeader = res.headers.get('x-security-token');
   wire('session', { env: creds.env, status: res.status, tokens: !!(cstHeader && tokenHeader) });
   if (!res.ok) throw await sessionFailure(res, creds.env);
   if (!cstHeader || !tokenHeader) throw new Error('Capital.com accepted the login but sent no session tokens.');
+  const session = await res.json();
+  requireRevision(revision);
+  if (typeof session.currentAccountId !== 'string' || !session.currentAccountId) {
+    throw new Error('Capital.com accepted the login but did not identify the financial account.');
+  }
+  if (sessionAccountId && sessionAccountId !== session.currentAccountId) configurationRevision += 1;
+  sessionAccountId = session.currentAccountId;
   cst = cstHeader;
   securityToken = tokenHeader;
   lastUsedAt = Date.now();
@@ -194,7 +234,10 @@ async function login() {
 async function ensureSession() {
   if (!creds) throw new Error('Capital.com is not connected — add the account under Settings → Broker connection.');
   if (cst && securityToken && Date.now() - lastUsedAt < SESSION_MARGIN_MS) return;
-  if (!loginPromise) loginPromise = login().finally(() => { loginPromise = null; });
+  if (!loginPromise) {
+    const pending = login().finally(() => { if (loginPromise === pending) loginPromise = null; });
+    loginPromise = pending;
+  }
   return loginPromise;
 }
 
@@ -208,10 +251,16 @@ async function ensureSession() {
  * reason — a timed-out `POST /positions` may well have opened a position, and asking again
  * would be the second one.
  */
-async function authedFetch(pathAndQuery, { method = 'GET', body } = {}) {
+async function authedFetch(pathAndQuery, { method = 'GET', body } = {}, revision = configurationRevision) {
   const startedAt = Date.now();
+  requireRevision(revision);
   await ensureSession();
-  const attempt = () => fetch(`${baseUrl()}${pathAndQuery}`, {
+  requireRevision(revision);
+  const attempt = async () => {
+    await requestSlot();
+    requireRevision(revision);
+    return fetch(`${baseUrl()}${pathAndQuery}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     method,
     headers: {
       CST: cst,
@@ -219,13 +268,17 @@ async function authedFetch(pathAndQuery, { method = 'GET', body } = {}) {
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+    });
+  };
   let res = await attempt();
+  requireRevision(revision);
   if (res.status === 401) {
     cst = null;
     securityToken = null;
     await ensureSession();
+    requireRevision(revision);
     res = await attempt();
+    requireRevision(revision);
   }
   if (res.ok) lastUsedAt = Date.now();
   wire('rest', { method, path: pathAndQuery, status: res.status, ms: Date.now() - startedAt, ...(body !== undefined ? { body } : {}) });
@@ -267,7 +320,13 @@ async function pricesPage(epic, resolution, { from, to, max }) {
   if (from != null) params.set('from', isoNoZ(from));
   if (to != null) params.set('to', isoNoZ(to));
   const res = await authedFetch(`/prices/${encodeURIComponent(epic)}?${params}`);
-  if (!res.ok) throw new Error(`Capital.com /prices HTTP ${res.status}`);
+  if (!res.ok) {
+    /* The venue's reason and the request it refused. A bare status gave a bot that could not
+     * start nothing to act on, and neither field here can hold a credential. */
+    const body = await res.json().catch(() => null);
+    const reason = body?.errorCode ? ` ${body.errorCode}` : '';
+    throw new Error(`Capital.com /prices HTTP ${res.status}${reason} for ${epic}?${params}`);
+  }
   const data = await res.json();
   return data.prices ?? [];
 }
@@ -523,10 +582,13 @@ function throughOrderGate(task) {
  *
  * `dealStatus` is the venue's verdict on the instruction and is the only field that says
  * whether anything happened; `status` describes the position that resulted, and is absent on
- * a refusal. A missing `dealStatus` is treated as a refusal rather than a success — an answer
- * that does not say it was accepted is not one to open a position on.
+ * a refusal. Only an explicit acceptance or rejection resolves an instruction. A malformed
+ * or pending answer leaves its outcome unknown and must never permit a replacement entry.
  */
 export function readConfirmation(json) {
+  if (json?.dealStatus !== 'ACCEPTED' && json?.dealStatus !== 'REJECTED') {
+    throw new Error('Capital.com returned an unresolved dealing verdict. The instruction outcome is unknown; check the original account before sending it again.');
+  }
   const accepted = json?.dealStatus === 'ACCEPTED';
   return {
     accepted,
@@ -548,8 +610,8 @@ const CONFIRM_TIMEOUT_MS = 10_000;
 const CONFIRM_POLL_MS = 250;
 
 /** The venue's verdict on one deal reference, raw. 404 while it is still being processed. */
-export async function capitalConfirm(dealReference) {
-  const res = await authedFetch(`/confirms/${encodeURIComponent(dealReference)}`);
+export async function capitalConfirm(dealReference, revision = configurationRevision) {
+  const res = await authedFetch(`/confirms/${encodeURIComponent(dealReference)}`, {}, revision);
   if (res.status === 404) return null; // not decided yet
   if (!res.ok) throw await failureOf(res, `/confirms/${dealReference}`);
   return readConfirmation(await res.json());
@@ -562,10 +624,10 @@ export async function capitalConfirm(dealReference) {
  * delivered, so a position may well be open — the one thing that must not happen is the app
  * deciding nothing happened and sending it again.
  */
-async function awaitConfirmation(dealReference) {
+async function awaitConfirmation(dealReference, revision) {
   const until = Date.now() + CONFIRM_TIMEOUT_MS;
   for (;;) {
-    const confirmation = await capitalConfirm(dealReference);
+    const confirmation = await capitalConfirm(dealReference, revision);
     if (confirmation) return confirmation;
     if (Date.now() >= until) {
       throw new Error(
@@ -578,31 +640,52 @@ async function awaitConfirmation(dealReference) {
 }
 
 /** Send one position-changing request and answer with what the venue made of it. */
-async function deal(pathAndQuery, options, what) {
+async function deal(pathAndQuery, options, what, revision = configurationRevision) {
   return throughOrderGate(async () => {
-    const res = await authedFetch(pathAndQuery, options);
+    const res = await authedFetch(pathAndQuery, options, revision);
     if (!res.ok) throw await failureOf(res, what);
     const { dealReference } = await res.json();
     if (!dealReference) throw new Error(`Capital.com ${what} answered without a deal reference`);
-    const confirmation = await awaitConfirmation(dealReference);
+    const confirmation = await awaitConfirmation(dealReference, revision);
     wire('deal', { what, dealReference, confirmation });
     return confirmation;
   });
 }
 
-/** The trading account this session acts on — the preferred one, as the platform marks it. */
+/** Identify the account bound to the session token, then read its current funds. */
 export async function capitalAccount() {
-  const res = await authedFetch('/accounts');
+  const revision = configurationRevision;
+  const session = await authedFetch('/session', {}, revision);
+  if (!session.ok) throw await failureOf(session, '/session');
+  const { accountId } = await session.json();
+  if (!accountId) throw new Error('Capital.com did not identify the active session account.');
+  requireRevision(revision);
+  if (sessionAccountId && sessionAccountId !== accountId) {
+    configurationRevision += 1;
+    sessionAccountId = accountId;
+    throw new Error('The Capital.com financial account changed. Explicitly restart trading on the current account.');
+  }
+  const res = await authedFetch('/accounts', {}, revision);
   if (!res.ok) throw await failureOf(res, '/accounts');
   const { accounts = [] } = await res.json();
-  return accounts.find((a) => a.preferred) ?? accounts[0] ?? null;
+  const account = accounts.find((a) => a.accountId === accountId);
+  if (!account) throw new Error('The active Capital.com account was not present in the account list.');
+  return account;
+}
+
+/** Read only: bots require hedging so entries cannot net someone else's exposure. */
+export async function capitalPreferences() {
+  const res = await authedFetch('/accounts/preferences');
+  if (!res.ok) throw await failureOf(res, '/accounts/preferences');
+  return res.json();
 }
 
 /** Every position the account holds — including ones this app did not open. */
 export async function capitalPositions() {
   const res = await authedFetch('/positions');
   if (!res.ok) throw await failureOf(res, '/positions');
-  const { positions = [] } = await res.json();
+  const { positions } = await res.json();
+  if (!Array.isArray(positions)) throw new Error('Capital.com returned an invalid position list.');
   return positions;
 }
 
@@ -614,18 +697,18 @@ export async function capitalPositions() {
  * afterwards: a stop placed in a second request is a stop that does not exist for as long as
  * that request takes, on a position that is already live.
  */
-export async function capitalOpenPosition(payload) {
-  return deal('/positions', { method: 'POST', body: payload }, 'POST /positions');
+export async function capitalOpenPosition(payload, revision) {
+  return deal('/positions', { method: 'POST', body: payload }, 'POST /positions', revision);
 }
 
 /** Move the stop and target on an open position. */
-export async function capitalAmendPosition(dealId, payload) {
-  return deal(`/positions/${encodeURIComponent(dealId)}`, { method: 'PUT', body: payload }, `PUT /positions/${dealId}`);
+export async function capitalAmendPosition(dealId, payload, revision) {
+  return deal(`/positions/${encodeURIComponent(dealId)}`, { method: 'PUT', body: payload }, `PUT /positions/${dealId}`, revision);
 }
 
 /** Close one position outright, at market. */
-export async function capitalClosePosition(dealId) {
-  return deal(`/positions/${encodeURIComponent(dealId)}`, { method: 'DELETE' }, `DELETE /positions/${dealId}`);
+export async function capitalClosePosition(dealId, revision) {
+  return deal(`/positions/${encodeURIComponent(dealId)}`, { method: 'DELETE' }, `DELETE /positions/${dealId}`, revision);
 }
 
 // ── Working orders (resting limits and stops) ───────────────────────────────
@@ -640,23 +723,24 @@ export async function capitalClosePosition(dealId) {
 export async function capitalWorkingOrders() {
   const res = await authedFetch('/workingorders');
   if (!res.ok) throw await failureOf(res, '/workingorders');
-  const { workingOrders = [] } = await res.json();
+  const { workingOrders } = await res.json();
+  if (!Array.isArray(workingOrders)) throw new Error('Capital.com returned an invalid working order list.');
   return workingOrders;
 }
 
 /** Rest an order at `level`. `type` is `LIMIT` or `STOP`. */
-export async function capitalCreateOrder(payload) {
-  return deal('/workingorders', { method: 'POST', body: payload }, 'POST /workingorders');
+export async function capitalCreateOrder(payload, revision) {
+  return deal('/workingorders', { method: 'POST', body: payload }, 'POST /workingorders', revision);
 }
 
 /** Move a resting order, or change the protection it will carry when it fills. */
-export async function capitalAmendOrder(dealId, payload) {
-  return deal(`/workingorders/${encodeURIComponent(dealId)}`, { method: 'PUT', body: payload }, `PUT /workingorders/${dealId}`);
+export async function capitalAmendOrder(dealId, payload, revision) {
+  return deal(`/workingorders/${encodeURIComponent(dealId)}`, { method: 'PUT', body: payload }, `PUT /workingorders/${dealId}`, revision);
 }
 
 /** Take a resting order off the book. */
-export async function capitalCancelOrder(dealId) {
-  return deal(`/workingorders/${encodeURIComponent(dealId)}`, { method: 'DELETE' }, `DELETE /workingorders/${dealId}`);
+export async function capitalCancelOrder(dealId, revision) {
+  return deal(`/workingorders/${encodeURIComponent(dealId)}`, { method: 'DELETE' }, `DELETE /workingorders/${dealId}`, revision);
 }
 
 // ── Account history ─────────────────────────────────────────────────────────
@@ -716,7 +800,9 @@ export async function capitalActivities(fromMs, toMs) {
  */
 export async function capitalProbe({ apiKey, identifier, password, env } = {}) {
   const base = env === 'live' ? LIVE_BASE : DEMO_BASE;
+  await requestSlot();
   const res = await fetch(`${base}/session`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     method: 'POST',
     headers: { 'X-CAP-API-KEY': apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({ identifier, password }),
@@ -725,7 +811,8 @@ export async function capitalProbe({ apiKey, identifier, password, env } = {}) {
   const probeToken = res.headers.get('x-security-token');
   if (!res.ok) throw await sessionFailure(res, env);
   if (!probeCst || !probeToken) throw new Error('Capital.com accepted the login but sent no session tokens.');
-  const accounts = await fetch(`${base}/accounts`, { headers: { CST: probeCst, 'X-SECURITY-TOKEN': probeToken } });
+  await requestSlot();
+  const accounts = await fetch(`${base}/accounts`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { CST: probeCst, 'X-SECURITY-TOKEN': probeToken } });
   if (!accounts.ok) throw new Error(`Signed in, but the account list could not be read (HTTP ${accounts.status}).`);
   const { accounts: list = [] } = await accounts.json();
   return list.map((a) => ({

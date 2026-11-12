@@ -345,14 +345,16 @@ export const VWAP_REVERSION_STRATEGY: StrategySpec = {
                     return;
                 }
 
-                if (today == null) return;
-
+                /* Kept only while it counts something. A bot trims its history once this
+                 * store is empty, so a session without an entry must leave nothing behind. */
                 let session = ctx.state.session as SessionState | undefined;
-                if (!session || session.day !== today) {
-                    session = { day: today, entries: 0 };
-                    ctx.state.session = session;
+                if (session && session.day !== today) {
+                    ctx.state.session = undefined;
+                    session = undefined;
                 }
-                if (session.entries >= maxEntries) return;
+                if (today == null) return;
+                const entries = session?.entries ?? 0;
+                if (entries >= maxEntries) return;
 
                 if (sinceOpen[i]! < warmupMinutes) return;
                 if (clock.closeMinutes[i]! > lastEntryMin) return;
@@ -401,7 +403,7 @@ export const VWAP_REVERSION_STRATEGY: StrategySpec = {
                     bracket: { stopLoss: stopPrice, takeProfit: mean },
                     tag: today,
                 });
-                session.entries += 1;
+                ctx.state.session = { day: today, entries: entries + 1 } satisfies SessionState;
             },
         };
     },

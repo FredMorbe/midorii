@@ -15,7 +15,7 @@ import { open, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  capitalAccount, capitalActivities, capitalAmendOrder, capitalAmendPosition, capitalCancelOrder, capitalClosePosition, capitalConfigured,
+  capitalAccount, capitalPreferences, capitalActivities, capitalAmendOrder, capitalAmendPosition, capitalCancelOrder, capitalClosePosition, capitalConfigured,
   capitalCreateOrder, capitalEnvironment, capitalMarketInfo, capitalMarkets, capitalOpenPosition, capitalPositions,
   capitalPrices, capitalProbe, capitalSubscribe, capitalSubscribeQuotes, capitalTransactions, capitalWorkingOrders,
   configureCapital, switchCapitalEnvironment,
@@ -55,12 +55,15 @@ import { appendLiveTrade, clearLiveTrades, loadLiveTrades, settleLiveTrade } fro
 import { deleteSession, listSessions, loadSession, saveSession } from './data/store/sessionStore.js';
 import { loadAlerts, saveAlerts } from './data/store/alertStore.js';
 import { loadBots, saveBots } from './data/store/botStore.js';
-import { clearBotAccount, listBotAccounts, loadBotAccount, saveBotAccount } from './data/store/botAccountStore.js';
+import { clearBotAccount, loadBotAccount, saveBotAccount, sweepBotAccounts } from './data/store/botAccountStore.js';
 import { applyTitleBarTheme } from './titlebar.js';
 import { approveWindowClose } from './windowCloseGuard.js';
 
 /** A replay journal is one snapshot and a line per trading call — far below this in practice. */
 const MAX_JOURNAL_CHARS = 20_000_000;
+
+/** Charts a replay window can show beside the one that trades — plenty for its four. */
+const MAX_GRID_CELLS = 16;
 /** The journal format the renderer writes — replay/replayJournal.ts. Kept in step with it by a test. */
 export const REPLAY_JOURNAL_VERSION = 2;
 
@@ -865,7 +868,7 @@ export function registerIpc() {
    * same bars tomorrow. See ReplaySession.snapshot.
    */
   ipcMain.handle('replay:saveSession', async (_e, request) => {
-    const { id = null, name = '', symbol, timeframe, session, journal = null, ticks = null, stats = {} } = request ?? {};
+    const { id = null, name = '', symbol, timeframe, session, journal = null, ticks = null, grid = null, stats = {} } = request ?? {};
 
     requireString(symbol, 'symbol');
     requireTimeframe(timeframe);
@@ -887,6 +890,16 @@ export function registerIpc() {
       }
     }
 
+    /* Which charts stood beside the one that trades. Only its shape is checked here: what a
+     * market or a timeframe means is for the renderer to say when the session is picked up. */
+    if (grid !== null) {
+      if (typeof grid !== 'object' || typeof grid.layout !== 'string' || !Array.isArray(grid.cells)
+        || grid.cells.length > MAX_GRID_CELLS
+        || grid.cells.some((c) => typeof c?.id !== 'string' || typeof c?.symbol !== 'string' || typeof c?.timeframe !== 'string')) {
+        throw new Error('replay:saveSession: this is not a window layout');
+      }
+    }
+
     return saveSession(sessionsDir(), {
       id,
       name: typeof name === 'string' ? name.slice(0, 120) : '',
@@ -896,6 +909,7 @@ export function registerIpc() {
       clock: session.clock,
       stats,
       ...(journal !== null ? { journal } : {}),
+      ...(grid !== null ? { grid: { layout: grid.layout, cells: grid.cells.map((c) => ({ id: c.id, symbol: c.symbol, timeframe: c.timeframe })) } } : {}),
       ...(typeof ticks === 'string' && ticks ? { ticks: ticks.toUpperCase() } : {}),
       session: {
         ...session,
@@ -1005,12 +1019,15 @@ export function registerIpc() {
   ipcMain.handle('paper:load', () => loadAccount(paperDir()));
 
   ipcMain.handle('paper:save', (_e, account) => {
-    const { symbol, session } = account ?? {};
+    const { symbol, session, extra } = account ?? {};
     requireString(symbol, 'symbol');
     if (!session || !session.broker) {
       throw new Error('paper:save: this is not an account snapshot');
     }
-    return saveAccount(paperDir(), { symbol, session });
+    if (extra != null && (typeof extra !== 'object' || Array.isArray(extra))) {
+      throw new Error('paper:save: extra must be an object');
+    }
+    return saveAccount(paperDir(), { symbol, session, extra });
   });
 
   ipcMain.handle('paper:clear', () => clearAccount(paperDir()));
@@ -1055,21 +1072,7 @@ export function registerIpc() {
 
   ipcMain.handle('botAccount:clear', (_e, id) => clearBotAccount(botAccountsDir(), requireString(id, 'id')));
 
-  /* Accounts whose bot is gone. Deleting a bot takes its account with it, so this only ever
-   * finds one left behind by a crash between the two writes — but left alone it would sit
-   * there for good, and it carries an account's worth of trades. */
-  ipcMain.handle('botAccount:sweep', async (_e, keep) => {
-    if (!Array.isArray(keep)) throw new Error('botAccount:sweep: expected the list of bot ids to keep');
-    const alive = new Set(keep.filter((id) => typeof id === 'string'));
-    const stored = await listBotAccounts(botAccountsDir());
-    let removed = 0;
-    for (const id of stored) {
-      if (alive.has(id)) continue;
-      await clearBotAccount(botAccountsDir(), id);
-      removed += 1;
-    }
-    return { removed };
-  });
+  ipcMain.handle('botAccount:sweep', (_e, keep) => sweepBotAccounts(botAccountsDir(), keep));
 
   /* ─── App theme + the custom title bar ─────────────────────────────── */
 
@@ -1384,45 +1387,48 @@ export function registerIpc() {
    */
 
   ipcMain.handle('capital:account', () => capitalAccount());
+  ipcMain.handle('capital:preferences', () => capitalPreferences());
 
   ipcMain.handle('capital:positions', () => capitalPositions());
 
-  ipcMain.handle('capital:open-position', (_e, spec = {}) => capitalOpenPosition({
+  ipcMain.handle('capital:open-position', (_e, spec = {}, revision) => capitalOpenPosition({
     epic: requireString(spec.epic, 'epic'),
     direction: requireDirection(spec.direction),
     size: requireSize(spec.size),
     ...optionalLevels(spec),
-  }));
+  }, revision));
 
-  ipcMain.handle('capital:amend-position', (_e, { dealId, ...levels } = {}) => capitalAmendPosition(
+  ipcMain.handle('capital:amend-position', (_e, { dealId, ...levels } = {}, revision) => capitalAmendPosition(
     requireString(dealId, 'dealId'),
     /* A level given as null is an instruction to REMOVE it, so it has to survive the
      * filter that drops the fields nobody mentioned — see `optionalLevels`. */
     optionalLevels(levels, { keepNull: true }),
+    revision,
   ));
 
-  ipcMain.handle('capital:close-position', (_e, dealId) => capitalClosePosition(requireString(dealId, 'dealId')));
+  ipcMain.handle('capital:close-position', (_e, dealId, revision) => capitalClosePosition(requireString(dealId, 'dealId'), revision));
 
   ipcMain.handle('capital:working-orders', () => capitalWorkingOrders());
 
-  ipcMain.handle('capital:create-order', (_e, spec = {}) => capitalCreateOrder({
+  ipcMain.handle('capital:create-order', (_e, spec = {}, revision) => capitalCreateOrder({
     epic: requireString(spec.epic, 'epic'),
     direction: requireDirection(spec.direction),
     size: requireSize(spec.size),
     type: requireOrderType(spec.type),
     level: requireLevel(spec.level, 'level'),
     ...optionalLevels(spec),
-  }));
+  }, revision));
 
-  ipcMain.handle('capital:amend-order', (_e, { dealId, level, ...levels } = {}) => capitalAmendOrder(
+  ipcMain.handle('capital:amend-order', (_e, { dealId, level, ...levels } = {}, revision) => capitalAmendOrder(
     requireString(dealId, 'dealId'),
     {
       ...(level == null ? {} : { level: requireLevel(level, 'level') }),
       ...optionalLevels(levels, { keepNull: true }),
     },
+    revision,
   ));
 
-  ipcMain.handle('capital:cancel-order', (_e, dealId) => capitalCancelOrder(requireString(dealId, 'dealId')));
+  ipcMain.handle('capital:cancel-order', (_e, dealId, revision) => capitalCancelOrder(requireString(dealId, 'dealId'), revision));
 
   /* ─── Binance Spot Demo trading ──────────────────────────────────────
    *

@@ -122,6 +122,17 @@ export const LIVE_GUARD_PARAMS: readonly StrategyParam[] = [
             + 'limit that only saw booked losses would let one trade run past it.',
     },
     {
+        key: 'flattenAtDailyLoss',
+        label: 'Flat at the daily loss limit',
+        type: 'bool',
+        default: false,
+        hint: 'On, everything the bot has open is closed at market and its resting orders are '
+            + 'cancelled as soon as the daily loss limit is reached. Off, the limit only stops new '
+            + 'trades and an open position is left to its own stop and target. Has no effect '
+            + 'without a daily loss limit. On a Capital.com account the limit is measured on the '
+            + 'whole account, so a loss made elsewhere on it closes this bot’s trades too.',
+    },
+    {
         key: 'dailyProfitTarget',
         label: 'Daily profit target (%)',
         type: 'number',
@@ -187,6 +198,8 @@ export interface LiveGuards {
     maxTradesPerDay: number;
     maxOpenPositions: number;
     dailyLossLimit: number;
+    /** Whether reaching the daily loss limit also closes what is open. */
+    flattenAtDailyLoss: boolean;
     dailyProfitTarget: number;
     cooldownMinutes: number;
     maxSpreadPct: number;
@@ -214,6 +227,7 @@ export function guardsOf(params: StrategyParams): LiveGuards {
         maxTradesPerDay: num('maxTradesPerDay'),
         maxOpenPositions: num('maxOpenPositions'),
         dailyLossLimit: num('dailyLossLimit'),
+        flattenAtDailyLoss: params.flattenAtDailyLoss === true,
         dailyProfitTarget: num('dailyProfitTarget'),
         cooldownMinutes: num('cooldownMinutes'),
         maxSpreadPct: num('maxSpreadPct'),
@@ -295,6 +309,9 @@ export function guardRefusal(guards: LiveGuards, state: GuardState): string | nu
      * figures: a limit that counted from the account's start would fire once and never
      * reset, and one that counted only booked results would let a single open trade run
      * straight through it. */
+    if ((guards.dailyLossLimit > 0 || guards.dailyProfitTarget > 0) && !(state.dayOpenEquity > 0)) {
+        return 'The day’s opening equity is unknown, so the daily limits cannot be measured. New entries wait.';
+    }
     if (state.dayOpenEquity > 0) {
         const movePct = ((state.equity - state.dayOpenEquity) / state.dayOpenEquity) * 100;
         if (guards.dailyLossLimit > 0 && movePct <= -guards.dailyLossLimit) {
@@ -313,6 +330,12 @@ export function guardRefusal(guards: LiveGuards, state: GuardState): string | nu
         }
     }
 
+    if (guards.maxSpreadPct > 0) {
+        if (!state.spread || !Number.isFinite(state.spread.bid) || !Number.isFinite(state.spread.ask)
+            || state.spread.bid <= 0 || state.spread.ask < state.spread.bid) {
+            return 'The spread is unknown or the quote is invalid. New entries wait for a valid quote.';
+        }
+    }
     if (guards.maxSpreadPct > 0 && state.spread) {
         const { bid, ask } = state.spread;
         const mid = (bid + ask) / 2;

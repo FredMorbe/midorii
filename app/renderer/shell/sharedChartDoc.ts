@@ -13,6 +13,11 @@
 // app's own position/alert/quote indicators, each of which is driven by a controller that
 // only exists on the chart that put it there.
 //
+// The Chart tab is the one mode that can show a grid. Its whole document — the layout, the
+// splitters, the sync links and every slot — is its own, kept under a key of its own; the
+// shared document is read off its FIRST slot alone. So a second chart's indicators and
+// drawings never reach the bot or a replay, and an edit made there reaches only slot one.
+//
 // The seam is the workspace's own storage adapter, not a layer above it: a synchronous
 // `get` restores BEFORE the first cell is built, so a chart opens already wearing the
 // shared look rather than flashing the defaults and correcting itself. Charts that are
@@ -31,6 +36,9 @@ const SHARED_KEY = 'midorii-chart-doc';
 
 /** Where each mode's own market is remembered, by mode name. */
 const MARKET_KEY = 'midorii-chart-market:';
+
+/** Where the Chart tab keeps its grid: layout, splitters, sync links and every slot. */
+const GRID_KEY = 'midorii-chart-grid';
 
 /**
  * The documents written before the charts shared one, by mode.
@@ -84,6 +92,12 @@ interface Member {
     /** This member was just handed the shared document and has not answered yet. The
      *  answer is a write of its own — see {@link push} on why it must go no further. */
     converging: boolean;
+    /** Whether this mode can show several charts, and so lays the shared look onto its first
+     *  slot instead of replacing the whole window. */
+    grid: boolean;
+    /** Whether it also keeps a grid document of its own beside the shared one. A replay's grid
+     *  belongs to the session, which stores it itself, so it keeps none. */
+    persistsGrid: boolean;
 }
 
 const members: Member[] = [];
@@ -161,13 +175,30 @@ function storedMarket(mode: string): ChartMarket | null {
  * the document around without ever being looked at.
  */
 function strip(doc: WorkspaceState): WorkspaceState {
+    // The grid is the Chart tab's own: what is shared is a single chart, wherever it sat.
+    const { layout: _l, trackSizes: _ts, sync: _sy, activeCellId: _a, ...shell } = doc;
     const cell = doc.charts[0];
-    if (!cell) return { ...doc, charts: [] };
-    const { symbol: _s, provider: _p, timeframe: _t, ...rest } = cell;
+    if (!cell) return { ...shell, layout: '1', charts: [] };
+    const { id: _id, symbol: _s, provider: _p, timeframe: _t, ...rest } = cell;
     const natives = cell.indicators?.natives.filter((entry) => !APP_INDICATORS.includes(nativeType(entry)));
     return {
+        ...shell,
+        layout: '1',
+        charts: [{ id: 'c1', ...rest, ...(cell.indicators ? { indicators: { ...cell.indicators, natives: natives ?? [] } } : {}) }],
+    };
+}
+
+/** A grid document without the app's own indicators on any slot — what is written to disk.
+ *  The controllers add those again on boot; restored from a document they would be a second
+ *  copy of lines with nothing behind them. */
+function withoutApp(doc: WorkspaceState): WorkspaceState {
+    return {
         ...doc,
-        charts: [{ ...rest, ...(cell.indicators ? { indicators: { ...cell.indicators, natives: natives ?? [] } } : {}) }],
+        charts: doc.charts.map((cell) => {
+            if (!cell.indicators) return cell;
+            const natives = cell.indicators.natives.filter((entry) => !APP_INDICATORS.includes(nativeType(entry)));
+            return { ...cell, indicators: { ...cell.indicators, natives } };
+        }),
     };
 }
 
@@ -180,21 +211,48 @@ function strip(doc: WorkspaceState): WorkspaceState {
  * the ledger converges as a multiset and takes them straight back off — a replay would
  * lose the very lines drawing its position the moment anything elsewhere was edited.
  */
-function dress(doc: WorkspaceState, market: ChartMarket, appIndicators: readonly string[]): WorkspaceState {
-    const cell: ChartState = doc.charts[0] ?? { id: 'c1' };
+function dress(doc: WorkspaceState, market: ChartMarket, appIndicators: readonly PersistedNativeEntry[]): WorkspaceState {
+    const id = doc.charts[0]?.id ?? 'c1';
+    return { ...doc, charts: [dressCell(doc.charts[0], id, market, appIndicators)] };
+}
+
+/** One chart entry: the shared cell's look under `id`, on `market`, carrying `appIndicators`. */
+function dressCell(look: ChartState | undefined, id: string, market: ChartMarket, appIndicators: readonly PersistedNativeEntry[]): ChartState {
+    const cell: ChartState = look ?? { id };
     const natives = [...(cell.indicators?.natives ?? []), ...appIndicators];
     return {
-        ...doc,
-        charts: [{
-            ...cell,
-            symbol: market.symbol,
-            provider: undefined,
-            timeframe: market.timeframe,
-            ...(cell.indicators || appIndicators.length > 0
-                ? { indicators: { manifest: cell.indicators?.manifest ?? [], natives } }
-                : {}),
-        }],
+        ...cell,
+        id,
+        symbol: market.symbol,
+        provider: undefined,
+        timeframe: market.timeframe,
+        ...(cell.indicators || appIndicators.length > 0
+            ? { indicators: { manifest: cell.indicators?.manifest ?? [], natives } }
+            : {}),
     };
+}
+
+/**
+ * The shared document laid onto a grid: its first slot takes the shared look (keeping the
+ * slot's own identity, market and app indicators), everything else — the layout, the
+ * splitters, the sync links, every other slot — stays the grid's.
+ */
+function dressGrid(grid: WorkspaceState, shared: WorkspaceState, fallback: ChartMarket, appIndicators: readonly PersistedNativeEntry[]): WorkspaceState {
+    const first = grid.charts[0];
+    const { trackSizes, sync, activeCellId } = grid;
+    return {
+        ...shared,
+        layout: grid.layout,
+        ...(trackSizes ? { trackSizes } : {}),
+        ...(sync ? { sync } : {}),
+        ...(activeCellId ? { activeCellId } : {}),
+        charts: [dressCell(shared.charts[0], first?.id ?? 'c1', marketOf(grid) ?? fallback, appIndicators), ...grid.charts.slice(1)],
+    };
+}
+
+/** The app's own indicators a chart entry is carrying, as the ledger spells them. */
+function appEntries(cell: ChartState | undefined): PersistedNativeEntry[] {
+    return cell?.indicators?.natives.filter((entry) => APP_INDICATORS.includes(nativeType(entry))) ?? [];
 }
 
 /** The app indicators a live chart is carrying right now — what {@link dress} must put
@@ -225,6 +283,13 @@ function push(member: Member, doc: WorkspaceState): void {
     const ws = member.ws;
     if (!ws) return;
     member.converging = true;
+    if (member.grid) {
+        // The grid as it is on screen: its layout and its other slots are not the shared
+        // document's to replace, and its first slot's controllers are still running.
+        const own = ws.getState();
+        ws.applyState(dressGrid(own, doc, member.seed, appEntries(own.charts[0])));
+        return;
+    }
     ws.applyState(dress(doc, liveMarket(ws, member.seed), appIndicatorsOn(ws)));
 }
 
@@ -236,9 +301,21 @@ function push(member: Member, doc: WorkspaceState): void {
  * market of its own — what a replay session needs, since its market is the one that was
  * set up rather than the one it was last left on.
  */
-export function shareChartDoc(mode: string, seed: ChartMarket, options: { remembers?: boolean } = {}): SharedChart {
+export function shareChartDoc(
+    mode: string,
+    seed: ChartMarket,
+    options: { remembers?: boolean; grid?: boolean | 'session' } = {},
+): SharedChart {
     migrate();
-    const member: Member = { mode, ws: null, remembers: options.remembers !== false, seed, converging: false };
+    const member: Member = {
+        mode,
+        ws: null,
+        remembers: options.remembers !== false,
+        seed,
+        converging: false,
+        grid: options.grid === true || options.grid === 'session',
+        persistsGrid: options.grid === true,
+    };
     // One member per mode: a mode that builds its chart again (a second replay session)
     // replaces the entry rather than leaving a destroyed workspace behind to push to.
     const existing = members.findIndex((m) => m.mode === mode);
@@ -248,9 +325,12 @@ export function shareChartDoc(mode: string, seed: ChartMarket, options: { rememb
     const storage: VelaStorage = {
         get: () => {
             const doc = decodeState(read(SHARED_KEY) ?? '');
-            if (!doc) return null; // nothing shared yet — the workspace boots on its own options
-            sharedJson ??= encodeState(doc);
+            if (doc) sharedJson ??= encodeState(doc);
             const market = (member.remembers ? storedMarket(mode) : null) ?? seed;
+            const grid = member.persistsGrid ? decodeState(read(GRID_KEY) ?? '') : null;
+            // Its own grid, with whatever the other modes did to the shared look since.
+            if (grid) return encodeState(doc ? dressGrid(grid, doc, market, []) : grid);
+            if (!doc) return null; // nothing shared yet — the workspace boots on its own options
             // No chart is live yet at boot: the app indicators are added by whatever wires
             // this chart, a moment after it is built.
             return encodeState(dress(doc, market, []));
@@ -258,6 +338,7 @@ export function shareChartDoc(mode: string, seed: ChartMarket, options: { rememb
         set: (_key, value) => {
             const doc = decodeState(value);
             if (!doc) return;
+            if (member.persistsGrid) write(GRID_KEY, encodeState(withoutApp(doc)));
             if (member.remembers) {
                 const market = marketOf(doc);
                 if (market) write(MARKET_KEY + mode, JSON.stringify(market));

@@ -1,0 +1,11 @@
+interface:
+  display_name: "Midorii Backtesting"
+  short_description: "Research strategies with parameter ranges and risk limits"
+  default_prompt: "Use $midorii-backtesting to research strategies in Midorii; ask for any missing risk per trade, asset, and daily trade limit before running sweeps."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "midorii"
+      description: "Local Midorii strategy research, parameter sweeps, and historical backtests"

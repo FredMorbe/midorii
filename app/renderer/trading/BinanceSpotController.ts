@@ -1,5 +1,5 @@
 import type { OrderSpec, ProtectionLevels } from '../../../shared/engine/broker.js';
-import type { IndicatorHandle } from '../../../src';
+import type { VisualsSink } from './accountCharts';
 import type { ReplayVisualState } from '../replay/replayIndicator';
 import { STATE_INPUT } from '../replay/replayIndicator';
 import { venueBook, type TradeBook } from '../replay/tradeBook';
@@ -115,7 +115,7 @@ export class BinanceSpotController implements TradingController {
     private lastPrice = 0;
     private lastReadAt = 0;
     private stale = false;
-    private indicator: IndicatorHandle | null = null;
+    private indicator: VisualsSink | null = null;
     private timer: ReturnType<typeof setInterval> | null = null;
     private reconciling = false;
     private readonly ids = new Map<number, number>();
@@ -246,7 +246,7 @@ export class BinanceSpotController implements TradingController {
         void this.reconcile();
     }
 
-    attachIndicator(handle: IndicatorHandle): void {
+    attachIndicator(handle: VisualsSink): void {
         this.indicator = handle;
         this.pushState();
     }

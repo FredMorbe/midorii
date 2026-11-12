@@ -1,6 +1,7 @@
 import type { DataProvider } from '../../../src/plugin';
 import type { IndicatorHandle } from '../../../src';
-import type { VelaWorkspace } from '../../../src/workspace';
+import type { ChartCell, VelaWorkspace } from '../../../src/workspace';
+import { forEachCell } from '../shell/eachCell';
 import type { Unsubscribe } from '../../../src/core/util/types';
 import { mountQuoteStrip, type Quote, type QuoteStrip } from './quoteStrip';
 import { QUOTE_INDICATOR_TYPE, quoteIndicatorInputs, registerQuoteIndicator } from './quoteIndicator';
@@ -33,8 +34,16 @@ export function quoteFeed(provider: DataProvider | undefined): QuoteFeed | null 
 }
 
 export function installQuotes(workspace: VelaWorkspace): void {
-    const chart = workspace.chart;
     registerQuoteIndicator();
+    // One readout per chart: each follows the market ITS chart is on.
+    forEachCell(workspace, quotesOn);
+}
+
+/** Wire the two-sided price to one chart. Returns what takes it off again. */
+function quotesOn(cell: ChartCell): () => void {
+    const chart = cell.chart;
+    /** The cell left the layout while something was still on its way back. */
+    let disposed = false;
 
     let strip: QuoteStrip | null = null;
     let indicator: IndicatorHandle | null = null;
@@ -104,22 +113,30 @@ export function installQuotes(workspace: VelaWorkspace): void {
      * widget context, so a level recomputed on every tick stays out of the undo timeline
      * and out of the persisted indicator ledger (mirrors the alert lines). */
     void chart.ready().then(() => {
-        const cell = workspace.root.querySelector<HTMLElement>('.vela-cell');
-        if (!cell) {
-            console.warn('[midorii] no chart cell to mount the quote readout into');
-            return;
-        }
-        strip = mountQuoteStrip(cell);
+        if (disposed) return;
+        strip = mountQuoteStrip(cell.host);
         indicator = chart.addNativeIndicator(QUOTE_INDICATOR_TYPE);
         follow(chart.market.symbol);
     });
 
-    chart.on('market:changed', ({ symbol }) => follow(symbol));
+    const offMarket = chart.on('market:changed', ({ symbol }) => follow(symbol));
 
     // The Settings tab can turn any of the three off while a market is already quoting —
     // redraw from the last tick so the change lands now rather than at the next one.
-    onQuoteDisplayChange((next) => {
+    const offDisplay = onQuoteDisplayChange((next) => {
         display = next;
         paint();
     });
+
+    return () => {
+        disposed = true;
+        generation++;
+        stopQuotes?.();
+        stopQuotes = null;
+        offMarket();
+        offDisplay();
+        strip?.clear();
+        strip?.destroy();
+        strip?.el.remove();
+    };
 }

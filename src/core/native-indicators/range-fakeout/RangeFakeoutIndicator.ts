@@ -17,6 +17,7 @@ import type {
     NativeIndicatorOutput,
 } from '../NativeIndicator';
 import { registerNativeIndicator } from '../NativeIndicator';
+import type { RangeBreakMode } from '../../analysis/range';
 
 /** Range fakeouts on the chart: the range, the gap left beyond it, and the trade back through it. */
 
@@ -28,6 +29,7 @@ const GAP_SIDE_LABELS: Record<string, FakeoutGapSide> = {
     'Against the breakout': 'reversal',
 };
 const TARGET_LABELS: Record<string, 'fixed' | 'range'> = { 'Fixed reward : risk': 'fixed', 'Far range edge': 'range' };
+const BREAK_MODE_LABELS: Record<string, RangeBreakMode> = { 'Close beyond edge': 'close', 'Wick beyond edge': 'wick' };
 
 const DEFAULTS = {
     minBars: RANGE_FAKEOUT_DEFAULTS.minBars,
@@ -36,6 +38,8 @@ const DEFAULTS = {
     maxFakeoutBars: RANGE_FAKEOUT_DEFAULTS.maxFakeoutBars,
     gapSide: 'Against the breakout',
     minGapAtr: RANGE_FAKEOUT_DEFAULTS.minGapAtr,
+    requireGap: RANGE_FAKEOUT_DEFAULTS.requireGap,
+    breakMode: 'Close beyond edge',
     target: 'Fixed reward : risk',
     rrr: RANGE_FAKEOUT_DEFAULTS.rrr,
     minEdgeReward: RANGE_FAKEOUT_DEFAULTS.minEdgeReward,
@@ -173,9 +177,11 @@ export function buildRangeFakeoutOutput(
         boxes.push(area(`${id}_range`, setup.rangeStartTime, setup.breakTime, setup.top, setup.bottom,
             withAlpha(view.rangeColor, 0.12), withAlpha(view.rangeColor, 0.5)));
         lines.push(line(`${id}_middle`, setup.rangeStartTime, setup.time, setup.middle, withAlpha(view.rangeColor, 0.8), 'dashed'));
-        const gapInk = setup.gap.direction === 'bull' ? view.bullColor : view.bearColor;
-        boxes.push(area(`${id}_gap`, setup.gap.startTime, setup.gap.time, setup.gap.top, setup.gap.bottom,
-            withAlpha(gapInk, 0.3), withAlpha(gapInk, 0.7)));
+        if (setup.gap) {
+            const gapInk = setup.gap.direction === 'bull' ? view.bullColor : view.bearColor;
+            boxes.push(area(`${id}_gap`, setup.gap.startTime, setup.gap.time, setup.gap.top, setup.gap.bottom,
+                withAlpha(gapInk, 0.3), withAlpha(gapInk, 0.7)));
+        }
         lines.push(line(`${id}_extreme`, setup.breakTime, setup.time, setup.extreme, withAlpha(ink, 0.8), 'dashed'));
 
         boxes.push(area(`${id}_reward`, setup.time, right, setup.close, target, withAlpha(view.profitColor, 0.15)));
@@ -244,10 +250,12 @@ class RangeFakeoutIndicator implements NativeIndicator {
                 minBars: num(this.inputs.minBars, DEFAULTS.minBars),
                 compression: num(this.inputs.compression, DEFAULTS.compression),
                 minTouches: num(this.inputs.minTouches, DEFAULTS.minTouches),
+                breakMode: choice(this.inputs.breakMode, BREAK_MODE_LABELS, 'fakeout trigger'),
             },
             maxFakeoutBars: num(this.inputs.maxFakeoutBars, DEFAULTS.maxFakeoutBars),
             gapSide: choice(this.inputs.gapSide, GAP_SIDE_LABELS, 'gap direction'),
             minGapAtr: num(this.inputs.minGapAtr, DEFAULTS.minGapAtr),
+            requireGap: this.inputs.requireGap !== false,
         });
         const trades = projectRangeFakeouts(
             setups,
@@ -282,10 +290,12 @@ export const rangeFakeoutDescriptor: NativeIndicatorDescriptor = {
             tooltip: 'Height limit as a multiple of ATR × √length. Lower finds tighter ranges.',
         },
         { key: 'minTouches', title: 'Touches per edge', type: 'int', defval: DEFAULTS.minTouches, min: 1, max: 10, step: 1, group: 'Range' },
+        { key: 'breakMode', title: 'Fakeout starts with', type: 'string', defval: DEFAULTS.breakMode, options: Object.keys(BREAK_MODE_LABELS), group: 'Fakeout' },
+        { key: 'requireGap', title: 'Require fair value gap', type: 'bool', defval: DEFAULTS.requireGap, group: 'Fakeout' },
         {
             key: 'maxFakeoutBars', title: 'Fakeout window', type: 'int', defval: DEFAULTS.maxFakeoutBars,
             min: 1, max: 200, step: 1, group: 'Fakeout',
-            tooltip: 'Bars after the breakout close in which price must close back through the range middle.',
+            tooltip: 'Bars after the selected closing breakout or wick sweep in which price must close back through the range middle.',
         },
         {
             key: 'gapSide', title: 'Gap direction', type: 'string', defval: DEFAULTS.gapSide,

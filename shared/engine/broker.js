@@ -242,6 +242,22 @@ export class Broker {
     this.pointValue = value;
   }
 
+  /** Change the order-size grid only while no existing exposure uses the old one. */
+  setSizeGrid(step, minimum) {
+    if (step != null && !(Number.isFinite(step) && step > 0)) {
+      throw new Error(`Broker: sizeStep must be a positive number or null, got ${step}`);
+    }
+    if (minimum != null && !(Number.isFinite(minimum) && minimum > 0)) {
+      throw new Error(`Broker: minSize must be a positive number or null, got ${minimum}`);
+    }
+    if (step === this.sizeStep && minimum === this.minSize) return;
+    if (this.positions.length > 0 || this.pending.length > 0) {
+      throw new Error('Broker: the size grid cannot change while something is open or waiting');
+    }
+    this.sizeStep = step ?? null;
+    this.minSize = minimum ?? null;
+  }
+
   /**
    * Install the rules that manage an open position, or clear them with null.
    *

@@ -26,6 +26,18 @@ const MAX_KEYS = 100;
 
 /** Ids are keys in one object, but they still reach a file, so they stay plain. */
 const SAFE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+const writes = new Map();
+
+function serializeWrite(dir, task) {
+  const previous = writes.get(dir) ?? Promise.resolve();
+  const write = previous.catch(() => undefined).then(task);
+  writes.set(dir, write);
+  void write.then(
+    () => { if (writes.get(dir) === write) writes.delete(dir); },
+    () => { if (writes.get(dir) === write) writes.delete(dir); },
+  );
+  return write;
+}
 
 function settingsPath(dir) {
   return path.join(dir, FILE);
@@ -67,17 +79,21 @@ export async function saveStrategySettings(dir, id, params) {
     throw new Error(`saveStrategySettings: ${Object.keys(params).length} settings is more than a strategy has`);
   }
 
-  const all = await loadStrategySettings(dir);
-  all[id] = params;
-  await writeAtomic(settingsPath(dir), all);
-  return all;
+  return serializeWrite(dir, async () => {
+    const all = await loadStrategySettings(dir);
+    all[id] = params;
+    await writeAtomic(settingsPath(dir), all);
+    return all;
+  });
 }
 
 /** Forgets one strategy's settings, so it falls back to its own defaults. */
 export async function clearStrategySettings(dir, id) {
-  const all = await loadStrategySettings(dir);
-  if (!(id in all)) return all;
-  delete all[id];
-  await writeAtomic(settingsPath(dir), all);
-  return all;
+  return serializeWrite(dir, async () => {
+    const all = await loadStrategySettings(dir);
+    if (!(id in all)) return all;
+    delete all[id];
+    await writeAtomic(settingsPath(dir), all);
+    return all;
+  });
 }

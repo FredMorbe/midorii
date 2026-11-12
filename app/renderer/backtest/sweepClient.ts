@@ -4,6 +4,7 @@ import { packBars, type SweepCommand, type SweepEvent, type SweepRequest } from 
 import type { BacktestBar } from '../../../shared/engine/backtest';
 import type { RankMetricId, SweepRanges } from '../../../shared/analysis/sweep';
 import type { Costs } from '../../../shared/engine/broker';
+import { getRuleStrategies } from '../strategies';
 
 /**
  * Starting a sweep on its own thread, and getting it back.
@@ -59,6 +60,7 @@ export function startSweep(options: StartSweepOptions): SweepHandle {
     const baseBars = options.baseBars && options.baseBars.length > 0 ? packBars(options.baseBars) : null;
 
     const request: SweepRequest = {
+        definitions: getRuleStrategies(),
         strategy: options.strategy,
         ranges: options.ranges,
         base: options.base,

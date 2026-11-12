@@ -60,14 +60,16 @@ export interface BotAccountWriter {
  * A writer that will not put a storage round trip in the middle of every tick.
  *
  * Trailing rather than leading, exactly as the chart account's is: what is worth storing is
- * the account as it ends up, not as it was when the burst started. A write that fails is
- * reported and dropped — the bot keeps running either way, and a failed write that silently
- * retried forever would be a growing queue nobody asked for.
+ * the account as it ends up, not as it was when the burst started. A failed write reaches
+ * flush callers and the runner so new entries cannot outrun durable safety state.
  *
  * One writer per bot in practice (each runner holds its own), but keyed by id anyway so a
  * shared one could not confuse two accounts if anybody ever built one.
+ *
+ * `onSaved` is told about every write that landed. Each write carries the whole account as
+ * it then stood, so one that lands after a failure has made up for it.
  */
-export function botAccountWriter(): BotAccountWriter {
+export function botAccountWriter(onError?: (error: unknown) => void, onSaved?: () => void): BotAccountWriter {
     let pending: { id: string; account: MidoriBotAccountSnapshot } | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     /** The write currently in flight, so a flush can wait for one it did not start. */
@@ -81,11 +83,15 @@ export function botAccountWriter(): BotAccountWriter {
         /* Chained onto whatever is already going, so two writes for one bot can never land
          * out of order — the second one is the account as it ended up. */
         inFlight = inFlight
+            .catch(() => undefined)
             .then(() => saveBotAccount(id, account))
-            .then(() => undefined)
+            .then(() => { onSaved?.(); })
             .catch((err: unknown) => {
                 console.error(`[midorii] could not persist the account for bot ${id}`, err);
+                onError?.(err);
+                throw err;
             });
+        void inFlight.catch(() => undefined);
         return inFlight;
     };
 

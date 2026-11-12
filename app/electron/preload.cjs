@@ -11,6 +11,15 @@ contextBridge.exposeInMainWorld('midori', {
    *  controls in the app topbar (see app/renderer/shell/appTopbar.ts). */
   platform: process.platform,
 
+  research: {
+    strategies: () => ipcRenderer.invoke('research:strategies'),
+    onChanged: (handler) => {
+      const listener = (_event, change) => handler(change ?? {});
+      ipcRenderer.on('research:changed', listener);
+      return () => ipcRenderer.off('research:changed', listener);
+    },
+  },
+
   ui: {
     /* `background` is the palette's own surface colour. The name alone was enough while
        there were two palettes; there are more now, and the window's paint colour — what
@@ -128,6 +137,15 @@ contextBridge.exposeInMainWorld('midori', {
 
   /* A finished parameter sweep — a ranking of settings, not an account. Its own shelf
      beside the runs, read on the same Analysis screen. */
+  search: {
+    limits: () => ipcRenderer.invoke('search:limits'),
+    prepare: (request) => ipcRenderer.invoke('search:prepare', request),
+    list: () => ipcRenderer.invoke('search:list'),
+    command: (request) => ipcRenderer.invoke('search:command', request),
+    results: (request) => ipcRenderer.invoke('search:results', request),
+    export: (request) => ipcRenderer.invoke('search:export', request),
+    review: (request) => ipcRenderer.invoke('search:review', request),
+  },
   sweep: {
     save: (request) => ipcRenderer.invoke('sweep:save', request),
     list: () => ipcRenderer.invoke('sweep:list'),
@@ -223,14 +241,15 @@ contextBridge.exposeInMainWorld('midori', {
     /* Trading. Each of these resolves with what the venue CONFIRMED, not with the
      * receipt it gave for the instruction — see app/electron/data/capital.js. */
     account: () => ipcRenderer.invoke('capital:account'),
+    preferences: () => ipcRenderer.invoke('capital:preferences'),
     positions: () => ipcRenderer.invoke('capital:positions'),
-    openPosition: (spec) => ipcRenderer.invoke('capital:open-position', spec),
-    amendPosition: (spec) => ipcRenderer.invoke('capital:amend-position', spec),
-    closePosition: (dealId) => ipcRenderer.invoke('capital:close-position', dealId),
+    openPosition: (spec, revision) => ipcRenderer.invoke('capital:open-position', spec, revision),
+    amendPosition: (spec, revision) => ipcRenderer.invoke('capital:amend-position', spec, revision),
+    closePosition: (dealId, revision) => ipcRenderer.invoke('capital:close-position', dealId, revision),
     workingOrders: () => ipcRenderer.invoke('capital:working-orders'),
-    createOrder: (spec) => ipcRenderer.invoke('capital:create-order', spec),
-    amendOrder: (spec) => ipcRenderer.invoke('capital:amend-order', spec),
-    cancelOrder: (dealId) => ipcRenderer.invoke('capital:cancel-order', dealId),
+    createOrder: (spec, revision) => ipcRenderer.invoke('capital:create-order', spec, revision),
+    amendOrder: (spec, revision) => ipcRenderer.invoke('capital:amend-order', spec, revision),
+    cancelOrder: (dealId, revision) => ipcRenderer.invoke('capital:cancel-order', dealId, revision),
     /** The two ledgers a finished trade's real cost is joined from. */
     history: (window) => ipcRenderer.invoke('capital:history', window),
     subscribeQuotes: (query) => ipcRenderer.invoke('capital:subscribe-quotes', query),

@@ -2,6 +2,7 @@ import { injectStyles, overlayScrollbarCss } from '../../../src/ui';
 import { RISK_PARAM_KEYS, resolveStrategyParams, strategyCatalog } from './index';
 import { fieldGrid, paramField } from './paramFields';
 import type { StrategyInfo, StrategyParams } from './types';
+import { refreshResearchStrategies } from './researchLibrary';
 import { button, ensureFigureStyles, sectionLabel } from '../runs/runViews';
 
 /**
@@ -142,7 +143,7 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
     root.append(bar, main);
     host.appendChild(root);
 
-    const catalog = strategyCatalog();
+    let catalog = strategyCatalog();
 
     let selected = catalog[0]?.id ?? '';
     /** What is on disk, keyed by strategy id. */
@@ -198,6 +199,8 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
 
     async function refresh(): Promise<void> {
         try {
+            await refreshResearchStrategies();
+            catalog = strategyCatalog();
             const next = await window.midori.strategies.load();
             /* Only re-seed the form where the file actually changed. Re-seeding everything
              * on every visit would throw away an edit somebody left half-finished. */
@@ -219,7 +222,10 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
         if (!spec) return;
         try {
             const params = resolveStrategyParams(spec.id, valuesFor(spec.id));
-            stored = await window.midori.strategies.save(spec.id, params);
+            stored = await window.midori.strategies.save(spec.id, {
+                ...params,
+                ...(stored[spec.id]?.__timeframe ? { __timeframe: stored[spec.id]!.__timeframe } : {}),
+            });
             editing.set(spec.id, params);
             status = { text: 'Saved. The Backtest tab starts from these.' };
         } catch (err) {
@@ -314,7 +320,7 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
         h.textContent = spec.name;
         const badge = doc.createElement('span');
         badge.className = 'midorii-strategies-badge';
-        badge.textContent = 'Strategy';
+        badge.textContent = spec.researchOnly ? 'Research only' : 'Strategy';
         head.append(h, badge);
         inner.appendChild(head);
 
@@ -402,7 +408,7 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
             const name = doc.createElement('b');
             name.textContent = spec.name;
             const what = doc.createElement('span');
-            what.textContent = spec.indicatorName ? `reads ${spec.indicatorName}` : 'strategy';
+            what.textContent = spec.researchOnly ? 'research only' : spec.indicatorName ? `reads ${spec.indicatorName}` : 'strategy';
             item.append(name, what);
             item.onclick = () => {
                 selected = spec.id;

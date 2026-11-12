@@ -117,6 +117,7 @@ export class BybitProvider implements DataProvider {
                 timezone: 'Etc/UTC',
                 mintick: info.tickSize,
                 pricescale: Math.round(1 / info.tickSize),
+                dealing: { sizeStep: info.stepSize, minSize: info.minQty },
             };
         } catch {
             return undefined; // the engine synthesizes a fallback

@@ -1,4 +1,5 @@
 import { STRATEGIES, resolveStrategyParams } from '../strategies';
+import { riskManagement } from '../../../shared/strategies/risk.js';
 import { resolveGuards } from '../strategies/liveGuards';
 import type { MidoriBot } from '../midori';
 import type { StrategyParams } from '../strategies/types';
@@ -168,17 +169,30 @@ export function toStored(bot: BotConfig): MidoriBot {
  * reading.
  */
 export function startRefusal(bot: BotConfig): string | null {
+    if (bot.strategy.startsWith('custom_') || STRATEGIES[bot.strategy]?.researchOnly) {
+        return 'Custom rule strategies are for historical backtests only and cannot run trading bots.';
+    }
     if (!STRATEGIES[bot.strategy]) {
         return `This build has no strategy called "${bot.strategy}".`;
     }
-    if (!bot.symbol.trim()) return 'This bot has no market to trade.';
+    if (!/^(?:[1-9]\d*|D|1D|W|1W|M|1M)$/.test(bot.timeframe)) return 'This bot has an invalid bar interval.';
+    if (!Number.isFinite(bot.balance) || bot.balance <= 0) return 'The opening balance must be finite and positive.';
+    if (!bot.symbol.trim()) return 'This bot has no asset to trade — choose one under Settings → Asset.';
     if (bot.venue === 'capital' && !bot.symbol.startsWith('capital:')) {
-        return 'A Capital.com bot has to run on a Capital.com market — pick one from the symbol list.';
+        return 'A Capital.com bot has to run on a Capital.com asset — choose one under Settings → Asset.';
     }
+    let params: StrategyParams;
     try {
-        resolveStrategyParams(bot.strategy, bot.params);
+        params = resolveStrategyParams(bot.strategy, bot.params);
     } catch (err) {
         return `The strategy settings no longer fit: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    /* Only the paper engine applies them. On a venue they would be settings that look in
+     * force and are not — refused rather than ignored, because the difference shows up as a
+     * stop that never moved on a real position. */
+    if (bot.venue === 'capital' && riskManagement(params) != null) {
+        return 'Break-even and trailing stops are only applied by the paper account. '
+            + 'Set “Break-even at” and “Trail from” to 0, or run this bot on the paper account.';
     }
     try {
         resolveGuards(bot.guards);

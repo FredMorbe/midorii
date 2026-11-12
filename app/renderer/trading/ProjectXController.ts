@@ -1,5 +1,5 @@
 import type { OrderSpec, ProtectionLevels } from '../../../shared/engine/broker.js';
-import type { IndicatorHandle } from '../../../src';
+import type { VisualsSink } from './accountCharts';
 import type { ReplayVisualState } from '../replay/replayIndicator';
 import { STATE_INPUT } from '../replay/replayIndicator';
 import { venueBook, type TradeBook } from '../replay/tradeBook';
@@ -153,7 +153,7 @@ export class ProjectXController implements TradingController {
     private lastAsk = 0;
     private lastReadAt = 0;
     private stale = false;
-    private indicator: IndicatorHandle | null = null;
+    private indicator: VisualsSink | null = null;
     private timer: ReturnType<typeof setInterval> | null = null;
     private reconciling = false;
     /** A read asked for while one was already running — see {@link nudge}. */
@@ -719,7 +719,7 @@ export class ProjectXController implements TradingController {
         }, NUDGE_MS);
     }
 
-    attachIndicator(indicator: IndicatorHandle | null): void {
+    attachIndicator(indicator: VisualsSink | null): void {
         this.indicator = indicator;
         this.pushState();
     }

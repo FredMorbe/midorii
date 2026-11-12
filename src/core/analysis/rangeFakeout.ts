@@ -2,20 +2,21 @@ import type { OHLCV } from '../model/ohlcv';
 import { atr } from '../native-indicators/classics/math';
 import { detectFairValueGaps } from './fvg';
 import { detectRanges, type RangeDetectOptions } from './range';
+import { barStepMs } from './barClock';
 
 /**
- * Range fakeouts: a range breaks on a close, leaves a fair value gap beyond the broken edge, and
- * is then closed back through its own middle.
+ * Range fakeouts: a closing breakout or wick sweep followed by a close through the frozen
+ * range middle. A fair value gap beyond the broken edge is required unless disabled.
  *
  *   range         a compressed two-sided range from the shared range detector
- *   breakout      the close beyond an edge that ended the range
+ *   breakout      the selected close or wick beyond an edge that ended the range
  *   gap           a fair value gap completed between the breakout and the confirmation, reaching
  *                 beyond the broken edge — the imbalance the false move left behind
  *   confirmation  within `maxFakeoutBars` of the breakout, a close past the range middle on the
  *                 far side. The setup trades against the breakout from here
  *
- * `gapSide` decides which gap counts: one pointing the way of the breakout (the impulse out of the
- * range), one pointing back (the snap back in), or either.
+ * When `requireGap` is enabled, `gapSide` decides which gap counts: one pointing the way of
+ * the breakout (the impulse out of the range), one pointing back (the snap back in), or either.
  *
  * The range, its edges and middle are final by the breakout bar, and every later value is read on
  * the confirmation close, so appending bars never moves a setup.
@@ -45,7 +46,7 @@ export interface RangeFakeoutSetup {
     middle: number;
     breakIndex: number;
     breakTime: number;
-    gap: RangeFakeoutGap;
+    gap: RangeFakeoutGap | null;
     /** The furthest price beyond the broken edge from the breakout to the confirmation. */
     extreme: number;
     extremeIndex: number;
@@ -64,6 +65,8 @@ export interface RangeFakeoutOptions {
     gapSide?: FakeoutGapSide;
     /** Smallest gap as a multiple of the 14-bar ATR on its completing bar. Default 0. */
     minGapAtr?: number;
+    /** Require a qualifying gap by confirmation. Disable for a range/sweep/midpoint setup. Default true. */
+    requireGap?: boolean;
 }
 
 /**
@@ -78,6 +81,7 @@ export const RANGE_FAKEOUT_DEFAULTS = {
     maxFakeoutBars: 10,
     gapSide: 'reversal' as FakeoutGapSide,
     minGapAtr: 0,
+    requireGap: true,
     targetMode: 'fixed' as 'fixed' | 'range',
     rrr: 1.5,
     minEdgeReward: 0.5,
@@ -92,22 +96,32 @@ export function detectRangeFakeouts(bars: readonly OHLCV[], opts: RangeFakeoutOp
     const maxFakeoutBars = opts.maxFakeoutBars ?? RANGE_FAKEOUT_DEFAULTS.maxFakeoutBars;
     const gapSide = opts.gapSide ?? RANGE_FAKEOUT_DEFAULTS.gapSide;
     const minGapAtr = opts.minGapAtr ?? RANGE_FAKEOUT_DEFAULTS.minGapAtr;
+    const requireGap = opts.requireGap ?? RANGE_FAKEOUT_DEFAULTS.requireGap;
     if (!Number.isInteger(maxFakeoutBars) || maxFakeoutBars < 1) {
         throw new Error(`detectRangeFakeouts: maxFakeoutBars must be an integer >= 1, got ${maxFakeoutBars}`);
     }
     if (!GAP_SIDES.includes(gapSide)) throw new Error(`detectRangeFakeouts: unknown gapSide "${String(gapSide)}"`);
     if (!(minGapAtr >= 0)) throw new Error(`detectRangeFakeouts: minGapAtr must be >= 0, got ${minGapAtr}`);
+    if (typeof requireGap !== 'boolean') throw new Error('detectRangeFakeouts: requireGap must be a boolean');
     if (bars.length === 0) return [];
 
     const atrValues = atr(bars, GAP_ATR_LENGTH);
-    const gaps = detectFairValueGaps(bars, { show: 'all' }).filter((zone) => {
+    const gaps = requireGap ? detectFairValueGaps(bars, { show: 'all' }).filter((zone) => {
         const reference = atrValues[zone.index]!;
         return Number.isFinite(reference) && zone.top - zone.bottom >= reference * minGapAtr;
-    });
+    }) : [];
     const setups: RangeFakeoutSetup[] = [];
+    const step = opts.range?.breakMode === 'wick' && bars.length > 1 ? barStepMs(bars) : null;
 
     for (const range of detectRanges(bars, opts.range)) {
         if (range.breakIndex === null || range.breakDirection === null) continue;
+        if (step !== null) {
+            let contiguous = true;
+            for (let i = range.startIndex + 1; i <= range.breakIndex; i += 1) {
+                if (bars[i]!.time - bars[i - 1]!.time !== step) { contiguous = false; break; }
+            }
+            if (!contiguous) continue;
+        }
         const up = range.breakDirection === 'up';
         const last = Math.min(bars.length - 1, range.breakIndex + maxFakeoutBars);
 
@@ -115,6 +129,7 @@ export function detectRangeFakeouts(bars: readonly OHLCV[], opts: RangeFakeoutOp
         let extremeIndex = range.breakIndex;
         for (let i = range.breakIndex; i <= last; i += 1) {
             const bar = bars[i]!;
+            if (step !== null && i > range.breakIndex && bar.time - bars[i - 1]!.time !== step) break;
             if (up ? bar.high > extreme : bar.low < extreme) {
                 extreme = up ? bar.high : bar.low;
                 extremeIndex = i;
@@ -122,7 +137,7 @@ export function detectRangeFakeouts(bars: readonly OHLCV[], opts: RangeFakeoutOp
             if (up ? !(bar.close < range.middle) : !(bar.close > range.middle)) continue;
 
             const gap = gapIn(gaps, range.breakIndex, i, up, range.top, range.bottom, gapSide);
-            if (gap) {
+            if (gap || !requireGap) {
                 setups.push({
                     direction: up ? 'bear' : 'bull',
                     rangeStartIndex: range.startIndex,

@@ -6,7 +6,7 @@
 //
 // Plain `.mjs` because the store is untyped Electron-side JS.
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -25,6 +25,13 @@ afterEach(async () => {
 });
 
 describe('strategy settings', () => {
+    it('keeps simultaneous saves for different strategies', async () => {
+        await Promise.all([
+            saveStrategySettings(dir, 'silverbullet', { rrr: 3 }),
+            saveStrategySettings(dir, 'rangefakeout', { rrr: 2 }),
+        ]);
+        expect(await loadStrategySettings(dir)).toEqual({ silverbullet: { rrr: 3 }, rangefakeout: { rrr: 2 } });
+    });
     it('is empty before anything is saved', async () => {
         expect(await loadStrategySettings(dir)).toEqual({});
     });
@@ -92,4 +99,25 @@ describe('strategy settings', () => {
         const runaway = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`k${i}`, i]));
         await expect(saveStrategySettings(dir, 'silverbullet', runaway)).rejects.toThrow(/more than a strategy has/);
     });
+});
+
+
+it('serializes a reset with saves without losing unrelated strategy settings', async () => {
+    await saveStrategySettings(dir, 'silverbullet', { rrr: 1 });
+    const saveFirst = saveStrategySettings(dir, 'rangefakeout', { rrr: 2 });
+    const reset = clearStrategySettings(dir, 'silverbullet');
+    const saveLast = saveStrategySettings(dir, 'silverbullet', { rrr: 3 });
+    await Promise.all([saveFirst, reset, saveLast]);
+    expect(await loadStrategySettings(dir)).toEqual({ rangefakeout: { rrr: 2 }, silverbullet: { rrr: 3 } });
+});
+
+it('keeps the committed settings on a failed write and accepts a later retry', async () => {
+    await saveStrategySettings(dir, 'silverbullet', { rrr: 1 });
+    const blockedTemp = path.join(dir, 'strategies.json.tmp');
+    await mkdir(blockedTemp);
+    await expect(saveStrategySettings(dir, 'rangefakeout', { rrr: 2 })).rejects.toThrow();
+    expect(await loadStrategySettings(dir)).toEqual({ silverbullet: { rrr: 1 } });
+    await rm(blockedTemp, { recursive: true });
+    await saveStrategySettings(dir, 'rangefakeout', { rrr: 2 });
+    expect(await loadStrategySettings(dir)).toEqual({ silverbullet: { rrr: 1 }, rangefakeout: { rrr: 2 } });
 });

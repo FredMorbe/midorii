@@ -12,6 +12,7 @@ import { RISK_PARAMS, leverageCap, positionSize } from '../../../shared/strategi
 import type { RiskMode } from '../../../shared/strategies/risk.js';
 import { cached, detectionCacheKey, type DetectionCache } from './detection';
 import type { StrategyParam, StrategyParams, StrategySpec } from './types';
+import type { RangeBreakMode } from '../../../src/core/analysis/range';
 
 /**
  * Range fakeouts as an executable strategy: against the breakout, on the next open after the
@@ -33,6 +34,15 @@ const FAKEOUT_RISK_PARAMS: readonly StrategyParam[] = RISK_PARAMS.map((param): S
 });
 
 const MODEL_PARAMS: readonly StrategyParam[] = [
+    {
+        key: 'breakMode', label: 'Fakeout starts with', type: 'select', default: 'close',
+        options: [{ value: 'close', label: 'Close beyond edge' }, { value: 'wick', label: 'Wick beyond edge' }],
+        hint: 'Wick mode freezes the confirmed range at the first swept edge. A close through its middle can confirm on that same candle. Bars sweeping both edges are skipped.',
+    },
+    {
+        key: 'requireGap', label: 'Require fair value gap', type: 'bool', default: RANGE_FAKEOUT_DEFAULTS.requireGap,
+        hint: 'Turn off to trade the range, fakeout and midpoint close without an additional gap condition.',
+    },
     {
         key: 'minBars',
         label: 'Range min bars',
@@ -120,7 +130,7 @@ const MODEL_PARAMS: readonly StrategyParam[] = [
     },
 ];
 
-const DETECTION_KEYS = ['minBars', 'compression', 'minTouches', 'maxFakeoutBars', 'gapSide', 'minGapAtr'] as const;
+const DETECTION_KEYS = ['minBars', 'compression', 'minTouches', 'maxFakeoutBars', 'gapSide', 'minGapAtr', 'breakMode', 'requireGap'] as const;
 
 function numberOf(params: StrategyParams, key: string): number {
     const value = params[key];
@@ -137,18 +147,18 @@ function stringOf(params: StrategyParams, key: string): string {
 export const RANGE_FAKEOUT_STRATEGY: StrategySpec = {
     id: 'rangefakeout',
     name: 'Range Fakeout',
-    description: 'A range breaks on a close, leaves a fair value gap beyond its edge and is closed '
-        + 'back through its middle; traded against the breakout with the stop beyond the fakeout.',
+    description: 'A range edge is swept by a wick or closing breakout, then price closes back through '
+        + 'its middle. An optional fair value gap filters entries against the fakeout.',
     indicator: RANGE_FAKEOUT_INDICATOR_TYPE,
     indicatorName: 'Range Fakeout',
     timeframe: RANGE_FAKEOUT_DEFAULTS.timeframe,
     rules: {
         conditions: [
-            'A compressed range with the required touches on both edges ends with a close beyond one edge.',
-            'Between that breakout and the confirmation, a fair value gap of the chosen direction and size '
+            'A compressed range with the required touches on both edges ends with the selected wick or close beyond one edge. Wick bars crossing both edges are skipped.',
+            'When a gap is required, between that breakout and the confirmation, a fair value gap of the chosen direction and size '
                 + 'completes and reaches beyond the broken edge.',
             'Within the fakeout window, a close lands past the range middle on the far side. Only the first '
-                + 'such close counts; without a qualifying gap by then there is no trade.',
+                + 'such close counts. When the gap filter is enabled, the gap must qualify by then.',
             'With the far-edge target, the edge offers at least the minimum reward-to-risk; otherwise the '
                 + 'setup is skipped.',
             'Only one order or position is active; a setup arriving during one is skipped.',
@@ -172,6 +182,8 @@ export const RANGE_FAKEOUT_STRATEGY: StrategySpec = {
         const riskValue = numberOf(params, 'riskValue');
         const cap = leverageCap(params);
         const minEdgeReward = numberOf(params, 'minEdgeReward');
+        const requireGap = params.requireGap;
+        if (typeof requireGap !== 'boolean') throw new Error('rangefakeout: requireGap must be true or false');
 
         const detected = cached(cache, detectionCacheKey('rangefakeout', params, DETECTION_KEYS), () => (
             detectRangeFakeouts(bars, {
@@ -179,10 +191,12 @@ export const RANGE_FAKEOUT_STRATEGY: StrategySpec = {
                     minBars: numberOf(params, 'minBars'),
                     compression: numberOf(params, 'compression'),
                     minTouches: numberOf(params, 'minTouches'),
+                    breakMode: stringOf(params, 'breakMode') as RangeBreakMode,
                 },
                 maxFakeoutBars: numberOf(params, 'maxFakeoutBars'),
                 gapSide: stringOf(params, 'gapSide') as FakeoutGapSide,
                 minGapAtr: numberOf(params, 'minGapAtr'),
+                requireGap,
             })
         ));
 

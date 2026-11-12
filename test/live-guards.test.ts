@@ -155,9 +155,13 @@ describe('what a guard refuses', () => {
         expect(guardRefusal(guards, state({ equity: 10_299 }))).toBeNull();
     });
 
-    it('says nothing about the day when there is no opening equity to measure against', () => {
-        const guards = defaults({ dailyLossLimit: 1 });
-        expect(guardRefusal(guards, state({ dayOpenEquity: 0, equity: 5_000 }))).toBeNull();
+    it('refuses when a daily limit is set and there is no opening equity to measure it against', () => {
+        // A limit that cannot be measured is not a limit that has been kept.
+        expect(guardRefusal(defaults({ dailyLossLimit: 1 }), state({ dayOpenEquity: 0, equity: 5_000 })))
+            .toMatch(/opening equity is unknown/);
+        expect(guardRefusal(defaults({ dailyProfitTarget: 1 }), state({ dayOpenEquity: 0, equity: 5_000 })))
+            .toMatch(/opening equity is unknown/);
+        expect(guardRefusal(defaults(), state({ dayOpenEquity: 0, equity: 5_000 }))).toBeNull();
     });
 
     it('waits out a cooldown and then stops mentioning it', () => {
@@ -174,8 +178,8 @@ describe('what a guard refuses', () => {
         expect(guardRefusal(guards, state({ spread: { bid: 100, ask: 100.01 } }))).toBeNull();
     });
 
-    it('says nothing about a spread on a venue that quotes one price', () => {
-        const guards = defaults({ maxSpreadPct: 0.001 });
+    it('allows missing quotes when the spread guard is disabled', () => {
+        const guards = defaults({ maxSpreadPct: 0 });
         expect(guardRefusal(guards, state({ spread: null }))).toBeNull();
     });
 
@@ -185,5 +189,24 @@ describe('what a guard refuses', () => {
         const guards = defaults({ sessionStart: 9 * 60, sessionEnd: 10 * 60, maxSpreadPct: 0.001, maxTradesPerDay: 1 });
         const bad = state({ tradesToday: 5, spread: { bid: 100, ask: 105 } });
         expect(guardRefusal(guards, bad)).toMatch(/trading window/);
+    });
+});
+
+
+it('blocks a configured spread limit when the quote is missing or invalid', () => {
+    for (const spread of [null, { bid: NaN, ask: 100 }, { bid: 101, ask: 100 }]) {
+        expect(guardRefusal(defaults({ maxSpreadPct: 0.2 }), state({ spread }))).toMatch(/spread.*unknown|quote.*invalid/i);
+    }
+});
+
+describe('the groups the bot form shows the guards in', () => {
+    // The form cuts the schema by position, so a guard added in the middle moves the cuts.
+    it('keeps every limit in the limits group and both feed conditions after it', () => {
+        const keys = LIVE_GUARD_PARAMS.map((p) => p.key);
+        expect(keys.slice(0, 4)).toEqual(['tradingDays', 'sessionStart', 'sessionEnd', 'flattenAtEnd']);
+        expect(keys.slice(4, 10)).toEqual([
+            'maxTradesPerDay', 'maxOpenPositions', 'dailyLossLimit', 'flattenAtDailyLoss', 'dailyProfitTarget', 'cooldownMinutes',
+        ]);
+        expect(keys.slice(10)).toEqual(['maxSpreadPct', 'staleFeedSeconds']);
     });
 });
