@@ -214,3 +214,38 @@ describe('the guard a mount holds', () => {
         expect(guard.rules()).toEqual({ limits: limits({ dailyLoss: 400 }), highWater: 0 });
     });
 });
+
+describe('an account that is made again every time — a replay session', () => {
+    beforeEach(() => stubStorage());
+
+    it('keeps its trailing mark in memory, and starts the next one from nothing', () => {
+        const first = propGuard('replay', { ephemeralMark: true });
+        first.set({ limits: limits({ startBalance: 50_000, maxLoss: 2_000, mllMode: 'intraday' }), highWater: 0 });
+        // Equity above the start raises the mark within this session…
+        expect(first.read({ equity: 53_000, openPnl: 0, history: [] }).highWater).toBe(53_000);
+        // …and none of it is written down, so the next session does not inherit a floor it never earned.
+        expect(loadAccountRules('replay').highWater).toBe(0);
+        const second = propGuard('replay', { ephemeralMark: true });
+        expect(second.read({ equity: 50_000, openPnl: 0, history: [] }).highWater).toBe(50_000);
+    });
+
+    it('is measured from the balance the session was started with, whatever was stored', () => {
+        saveAccountRules('replay', { limits: limits({ startBalance: 150_000, maxLoss: 3_000 }), highWater: 0 });
+        const guard = propGuard('replay', { ephemeralMark: true, startBalance: () => 10_000 });
+        expect(guard.limits().startBalance).toBe(10_000);
+        expect(guard.rules().limits.startBalance).toBe(10_000);
+        expect(guard.limits().maxLoss).toBe(3_000);
+        // The floor is 7,000 off a 10,000 start, not 147,000 off the stored 150,000.
+        expect(guard.read({ equity: 9_000, openPnl: 0, history: [] }).room).toBe(2_000);
+    });
+
+    it('counts a session day on the clock it is given, not the wall clock', () => {
+        const guard = propGuard('replay', { ephemeralMark: true });
+        guard.set({ limits: limits({ dailyLoss: 500 }), highWater: 0 });
+        const history = [closed(-600, '2024-03-05T15:00:00Z')];
+        const sameDay = guard.read({ equity: 9_400, openPnl: 0, history, now: Date.parse('2024-03-05T16:00:00Z') });
+        expect(sameDay.dayRoom).toBe(-100);
+        const nextDay = guard.read({ equity: 9_400, openPnl: 0, history, now: Date.parse('2024-03-06T16:00:00Z') });
+        expect(nextDay.dayRoom).toBe(500);
+    });
+});

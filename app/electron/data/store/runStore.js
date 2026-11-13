@@ -28,9 +28,10 @@
  * which is what happens when it is missing or unreadable, rather than
  * presenting an empty library over a folder full of results.
  */
-import { readFile, writeFile, rename, mkdir, readdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir, readdir, unlink, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { MAX_SHOTS, MAX_SHOT_BYTES, MAX_SHOT_LABEL, normalizeTags, sniffImage } from '../../../../shared/journal.js';
 
 /** Guards against a runaway loop filling the disk. */
 const MAX_RUNS = 2000;
@@ -108,6 +109,8 @@ function summarize(run) {
     initialBalance: run.initialBalance,
     resolution: run.resolution,
     note: run.note ?? '',
+    tags: run.tags ?? [],
+    shots: run.shots?.length ?? 0,
     stats: {
       netPnl: run.stats.netPnl,
       returnPct: run.stats.returnPct,
@@ -210,6 +213,7 @@ export async function saveRun(dir, run) {
   const dropped = index.splice(MAX_RUNS);
   for (const old of dropped) {
     await unlink(runFile(dir, old.id)).catch(() => {});
+    await rm(shotsDir(dir, old.id), { recursive: true, force: true }).catch(() => {});
   }
 
   await writeAtomic(path.join(dir, INDEX_FILE), index);
@@ -220,6 +224,8 @@ export async function saveRun(dir, run) {
 export async function deleteRun(dir, id) {
   const file = runFile(dir, id);
   if (existsSync(file)) await unlink(file);
+  // The images belong to the run: left behind they would be files nothing can name any more.
+  await rm(shotsDir(dir, id), { recursive: true, force: true });
 
   const index = (await listRuns(dir)).filter((r) => r.id !== id);
   await writeAtomic(path.join(dir, INDEX_FILE), index);
@@ -235,4 +241,96 @@ export async function annotateRun(dir, id, note) {
   const index = (await listRuns(dir)).map((r) => (r.id === id ? { ...r, note: run.note } : r));
   await writeAtomic(path.join(dir, INDEX_FILE), index);
   return run.note;
+}
+
+/** Applies a change to one run's entry in the index, keeping the rest of the index as it is. */
+async function patchIndex(dir, id, patch) {
+  const index = (await listRuns(dir)).map((r) => (r.id === id ? { ...r, ...patch } : r));
+  await writeAtomic(path.join(dir, INDEX_FILE), index);
+}
+
+/* ── the journal: tags and images ─────────────────────────────────────────
+ *
+ * The note above is the journal's text. Tags are for finding a run again, images are for
+ * remembering what the chart looked like. Images are files beside the run, in a folder of
+ * their own, because inlining them would make every list read and every run load carry
+ * megabytes nobody asked for.
+ */
+
+const SHOT_ID = /^[0-9a-z]{6,16}$/;
+
+function shotsDir(dir, id) {
+  runFile(dir, id); // validates the id before it shapes a path
+  return path.join(dir, `${id}.shots`);
+}
+
+function shotFile(dir, id, shot) {
+  if (typeof shot?.id !== 'string' || !SHOT_ID.test(shot.id)) throw new Error('Invalid image id');
+  return path.join(shotsDir(dir, id), `${shot.id}.${shot.type === 'jpeg' ? 'jpg' : 'png'}`);
+}
+
+/** Replaces the run's tags with the cleaned list and answers with what was stored. */
+export async function setRunTags(dir, id, tags) {
+  const run = await loadRun(dir, id);
+  run.tags = normalizeTags(tags);
+  await writeAtomic(runFile(dir, id), run);
+  await patchIndex(dir, id, { tags: run.tags });
+  return run.tags;
+}
+
+/**
+ * Attaches one image to a run. `data` is the bytes; what they are is judged from the bytes
+ * themselves, and anything that is not a PNG or a JPEG is refused.
+ */
+export async function addRunShot(dir, id, { data, label = '', takenAt = Date.now() } = {}) {
+  const run = await loadRun(dir, id);
+  const bytes = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+  if (!bytes) throw new Error('addRunShot: the image has to be bytes');
+  if (bytes.length > MAX_SHOT_BYTES) {
+    throw new Error(`This image is ${(bytes.length / 1048576).toFixed(1)} MB — the journal keeps images up to ${MAX_SHOT_BYTES / 1048576} MB.`);
+  }
+  const type = sniffImage(bytes);
+  if (!type) throw new Error('The journal keeps PNG and JPEG images; this is neither.');
+  const shots = run.shots ?? [];
+  if (shots.length >= MAX_SHOTS) throw new Error(`A run keeps up to ${MAX_SHOTS} images — remove one first.`);
+
+  const shot = {
+    id: `${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, '0')}`,
+    type,
+    bytes: bytes.length,
+    takenAt: Number.isFinite(takenAt) ? takenAt : Date.now(),
+    label: typeof label === 'string' ? label.trim().slice(0, MAX_SHOT_LABEL) : '',
+  };
+  await mkdir(shotsDir(dir, id), { recursive: true });
+  await writeFile(shotFile(dir, id, shot), bytes);
+  run.shots = [...shots, shot];
+  try {
+    await writeAtomic(runFile(dir, id), run);
+  } catch (err) {
+    // The record does not know about the file, so the file would be unreachable.
+    await unlink(shotFile(dir, id, shot)).catch(() => {});
+    throw err;
+  }
+  await patchIndex(dir, id, { shots: run.shots.length });
+  return shot;
+}
+
+/** One image's bytes and kind. Rejects if the run does not list it or the file is gone. */
+export async function loadRunShot(dir, id, shotId) {
+  const run = await loadRun(dir, id);
+  const shot = (run.shots ?? []).find((s) => s.id === shotId);
+  if (!shot) throw new Error(`No such image on this run: ${shotId}`);
+  return { type: shot.type, data: await readFile(shotFile(dir, id, shot)) };
+}
+
+/** Takes one image off a run, file and record both. Removing what is not there is not an error. */
+export async function removeRunShot(dir, id, shotId) {
+  const run = await loadRun(dir, id);
+  const shot = (run.shots ?? []).find((s) => s.id === shotId);
+  if (!shot) return false;
+  run.shots = run.shots.filter((s) => s.id !== shotId);
+  await writeAtomic(runFile(dir, id), run);
+  await patchIndex(dir, id, { shots: run.shots.length });
+  await unlink(shotFile(dir, id, shot)).catch(() => {});
+  return true;
 }

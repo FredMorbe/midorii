@@ -97,6 +97,8 @@ contextBridge.exposeInMainWorld('midori', {
     sessions: () => ipcRenderer.invoke('replay:sessions'),
     loadSession: (id) => ipcRenderer.invoke('replay:loadSession', id),
     deleteSession: (id) => ipcRenderer.invoke('replay:deleteSession', id),
+    renameSession: (id, name) => ipcRenderer.invoke('replay:renameSession', id, name),
+    duplicateSession: (id) => ipcRenderer.invoke('replay:duplicateSession', id),
   },
 
   /* The feed recorder — every print and quote on a ProjectX contract that is open, written
@@ -184,6 +186,10 @@ contextBridge.exposeInMainWorld('midori', {
     load: (id) => ipcRenderer.invoke('runs:load', id),
     delete: (id) => ipcRenderer.invoke('runs:delete', id),
     annotate: (id, note) => ipcRenderer.invoke('runs:annotate', id, note),
+    setTags: (id, tags) => ipcRenderer.invoke('runs:setTags', id, tags),
+    addShot: (id, shot) => ipcRenderer.invoke('runs:addShot', id, shot),
+    shot: (id, shotId) => ipcRenderer.invoke('runs:shot', id, shotId),
+    removeShot: (id, shotId) => ipcRenderer.invoke('runs:removeShot', id, shotId),
   },
 
   /* The live trading journal — every trade taken on a real account, kept by Midorii

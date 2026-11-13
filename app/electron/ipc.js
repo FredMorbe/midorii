@@ -49,10 +49,13 @@ import { DEFAULT_SOURCE, listSources, sourceOf } from './data/providers/index.js
 import { deleteDataset, describeMs, listDatasets, mergeBars, parseTimeframe, readBars, readMeta } from './data/store/barStore.js';
 import { annotateSweep, deleteSweep, listSweeps, loadSweep, saveSweep } from './data/store/sweepStore.js';
 import { clearStrategySettings, loadStrategySettings, saveStrategySettings } from './data/store/strategyStore.js';
-import { annotateRun, condenseEquity, deleteRun, listRuns, loadRun, saveRun } from './data/store/runStore.js';
+import {
+  addRunShot, annotateRun, condenseEquity, deleteRun, listRuns, loadRun, loadRunShot, removeRunShot, saveRun, setRunTags,
+} from './data/store/runStore.js';
+import { MAX_SHOTS, normalizeTags } from '../../shared/journal.js';
 import { clearAccount, loadAccount, saveAccount } from './data/store/paperStore.js';
 import { appendLiveTrade, clearLiveTrades, loadLiveTrades, settleLiveTrade } from './data/store/liveTradeStore.js';
-import { deleteSession, listSessions, loadSession, saveSession } from './data/store/sessionStore.js';
+import { deleteSession, duplicateSession, listSessions, loadSession, renameSession, saveSession } from './data/store/sessionStore.js';
 import { loadAlerts, saveAlerts } from './data/store/alertStore.js';
 import { loadBots, saveBots } from './data/store/botStore.js';
 import { clearBotAccount, loadBotAccount, saveBotAccount, sweepBotAccounts } from './data/store/botAccountStore.js';
@@ -64,6 +67,8 @@ const MAX_JOURNAL_CHARS = 20_000_000;
 
 /** Charts a replay window can show beside the one that trades — plenty for its four. */
 const MAX_GRID_CELLS = 16;
+/** Characters in one journal snapshot kept with a parked session — about 6 MB of image, base64 included. */
+const MAX_SESSION_SHOT_CHARS = 8_000_000;
 /** The journal format the renderer writes — replay/replayJournal.ts. Kept in step with it by a test. */
 export const REPLAY_JOURNAL_VERSION = 2;
 
@@ -779,7 +784,7 @@ export function registerIpc() {
    * results page, comparable against each other.
    */
   ipcMain.handle('replay:save', async (_e, request) => {
-    const { symbol, timeframe, note = '', source = 'replay', ...result } = request ?? {};
+    const { symbol, timeframe, note = '', tags = [], source = 'replay', ...result } = request ?? {};
 
     requireString(symbol, 'symbol');
     requireTimeframe(timeframe);
@@ -812,6 +817,7 @@ export function registerIpc() {
       symbol,
       timeframe,
       note: typeof note === 'string' ? note.slice(0, 2000) : '',
+      tags: normalizeTags(tags),
     });
   });
 
@@ -868,7 +874,7 @@ export function registerIpc() {
    * same bars tomorrow. See ReplaySession.snapshot.
    */
   ipcMain.handle('replay:saveSession', async (_e, request) => {
-    const { id = null, name = '', symbol, timeframe, session, journal = null, ticks = null, grid = null, stats = {} } = request ?? {};
+    const { id = null, name = '', symbol, timeframe, session, journal = null, ticks = null, grid = null, shots = [], stats = {} } = request ?? {};
 
     requireString(symbol, 'symbol');
     requireTimeframe(timeframe);
@@ -900,6 +906,15 @@ export function registerIpc() {
       }
     }
 
+    /* Snapshots taken for the journal while the session is open, kept with it so they are still
+     * there when it is picked up again — and filed with the run when it is finished. Only their
+     * shape and size are checked here; the journal store judges the bytes when they are filed. */
+    if (!Array.isArray(shots) || shots.length > MAX_SHOTS
+      || shots.some((s) => typeof s?.png !== 'string' || !s.png.startsWith('data:image/png;base64,')
+        || s.png.length > MAX_SESSION_SHOT_CHARS || !Number.isFinite(s.takenAt))) {
+      throw new Error('replay:saveSession: these are not journal snapshots');
+    }
+
     return saveSession(sessionsDir(), {
       id,
       name: typeof name === 'string' ? name.slice(0, 120) : '',
@@ -909,6 +924,7 @@ export function registerIpc() {
       clock: session.clock,
       stats,
       ...(journal !== null ? { journal } : {}),
+      shots: shots.map((s) => ({ png: s.png, takenAt: s.takenAt, label: typeof s.label === 'string' ? s.label.slice(0, 120) : '' })),
       ...(grid !== null ? { grid: { layout: grid.layout, cells: grid.cells.map((c) => ({ id: c.id, symbol: c.symbol, timeframe: c.timeframe })) } } : {}),
       ...(typeof ticks === 'string' && ticks ? { ticks: ticks.toUpperCase() } : {}),
       session: {
@@ -932,6 +948,14 @@ export function registerIpc() {
     deleteSession(sessionsDir(), requireString(id, 'id'))
   ));
 
+  ipcMain.handle('replay:renameSession', (_e, id, name) => (
+    renameSession(sessionsDir(), requireString(id, 'id'), name)
+  ));
+
+  ipcMain.handle('replay:duplicateSession', (_e, id) => (
+    duplicateSession(sessionsDir(), requireString(id, 'id'))
+  ));
+
   /* The run library — one shelf for everything that finished, whoever traded
    * it. `replay:save` above puts sessions on it; a backtest will put its runs
    * on the same one. Reading is separate from writing because the reader is a
@@ -948,6 +972,19 @@ export function registerIpc() {
 
   ipcMain.handle('runs:annotate', (_e, id, note) => (
     annotateRun(runsDir(), requireString(id, 'id'), typeof note === 'string' ? note : '')
+  ));
+
+  // The rest of a run's journal: tags to find it by, and images of what the chart looked like.
+  ipcMain.handle('runs:setTags', (_e, id, tags) => setRunTags(runsDir(), requireString(id, 'id'), tags));
+
+  ipcMain.handle('runs:addShot', (_e, id, shot) => addRunShot(runsDir(), requireString(id, 'id'), shot ?? {}));
+
+  ipcMain.handle('runs:shot', (_e, id, shotId) => (
+    loadRunShot(runsDir(), requireString(id, 'id'), requireString(shotId, 'shotId'))
+  ));
+
+  ipcMain.handle('runs:removeShot', (_e, id, shotId) => (
+    removeRunShot(runsDir(), requireString(id, 'id'), requireString(shotId, 'shotId'))
   ));
 
   /* ─── Strategy settings ─────────────────────────────────────────────── *

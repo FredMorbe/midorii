@@ -188,28 +188,50 @@ export interface PropGuard {
      * that is the only way a trailing floor rises, and losing it to a restart would drop the
      * floor back under an account that had already earned a higher one.
      */
-    read(input: { equity: number; openPnl: number; history: readonly HistoryRow[] }): PropStanding;
+    read(input: { equity: number; openPnl: number; history: readonly HistoryRow[]; now?: number }): PropStanding;
     /** Replace the rules — what the dialog hands back. */
     set(rules: AccountRules): void;
 }
 
-export function propGuard(account: string): PropGuard {
-    let held = loadAccountRules(account);
+/** What an account that is not a venue's has to say differently about its own rules. */
+export interface PropGuardOptions {
+    /**
+     * Keep the trailing mark in memory only, starting from nothing.
+     *
+     * For an account that is made again every time it is used — a replay session. Its history is
+     * whole, so the mark is worked out from it exactly; a mark stored from the last session would
+     * be a floor earned on a different run of the market.
+     */
+    ephemeralMark?: boolean;
+    /**
+     * What the account started with, where that is a fact of the account and not a setting.
+     * Overrides the stored figure, so the floor is measured from the balance actually traded.
+     */
+    startBalance?: () => number;
+}
+
+export function propGuard(account: string, options: PropGuardOptions = {}): PropGuard {
+    const loaded = loadAccountRules(account);
+    let held: AccountRules = options.ephemeralMark ? { ...loaded, highWater: 0 } : loaded;
+    const withStart = (rules: AccountRules): AccountRules => (
+        options.startBalance ? { ...rules, limits: { ...rules.limits, startBalance: options.startBalance() } } : rules
+    );
 
     return {
-        limits: () => held.limits,
-        rules: () => held,
-        read: ({ equity, openPnl, history }) => {
+        limits: () => withStart(held).limits,
+        rules: () => withStart(held),
+        read: ({ equity, openPnl, history, now }) => {
             const standing = accountStanding({
-                limits: held.limits,
+                limits: withStart(held).limits,
                 equity,
                 openPnl,
                 history,
                 storedHighWater: held.highWater,
+                ...(now !== undefined ? { now } : {}),
             });
             if (standing.highWater > held.highWater) {
                 held = { ...held, highWater: standing.highWater };
-                saveAccountRules(account, held);
+                if (!options.ephemeralMark) saveAccountRules(account, held);
             }
             return standing;
         },

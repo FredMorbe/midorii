@@ -60,10 +60,13 @@ export class ReplaySession {
    * @param {object} [options.costs]        Broker cost overrides
    * @param {number} [options.stepMs]       bar duration; inferred when absent
    * @param {'netting'|'hedging'} [options.mode]  how a second entry is read
+   * @param {number} [options.pointValue]   money per point per unit — see Broker
+   * @param {?number} [options.sizeStep]    smallest size increment — see Broker
+   * @param {?number} [options.minSize]     smallest position — see Broker
    */
   constructor({
     bars, startIndex, balance = 10_000, costs = {}, stepMs = null,
-    mode = POSITION_MODE.HEDGING,
+    mode = POSITION_MODE.HEDGING, pointValue = 1, sizeStep = null, minSize = null,
   }) {
     if (!Array.isArray(bars) || bars.length === 0) {
       throw new Error('ReplaySession: no bars to replay');
@@ -78,7 +81,7 @@ export class ReplaySession {
     this.startIndex = startIndex;
     this.index = startIndex;
     this.stepMs = stepMs ?? inferStepMs(bars);
-    this.broker = new Broker({ balance, costs, mode });
+    this.broker = new Broker({ balance, costs, mode, pointValue, sizeStep, minSize });
 
     /* Where the session began, as a moment rather than an index.
      *

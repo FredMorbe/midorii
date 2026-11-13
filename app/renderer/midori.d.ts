@@ -263,6 +263,22 @@ export interface MidoriRecorderStatus {
  */
 export type MidoriTick = [number, 1, number, number, 0 | 1 | null] | [number, 2, number | null, number | null, number | null];
 
+/** One row of the session list — what the index holds, without opening the session. */
+export interface MidoriSessionSummary {
+    id: string;
+    name: string;
+    symbol: string;
+    timeframe: string;
+    savedAt: number;
+    startTime: number;
+    clock: number;
+    bars: number;
+    trades: number;
+    openPositions: number;
+    equity: number | null;
+    initialBalance: number | null;
+}
+
 interface MidoriSessionRecord {
     id: string;
     name: string;
@@ -278,6 +294,8 @@ interface MidoriSessionRecord {
     ticks?: string | null;
     /** The charts beside the one that trades, where the window had any. */
     grid?: MidoriReplayGrid;
+    /** Snapshots taken for the journal while the session was open. */
+    shots?: Array<{ png: string; takenAt: number; label: string }>;
 }
 
 /** The layout of a replay window and what each chart but the first watches. */
@@ -351,6 +369,10 @@ export interface MidoriRunSummary {
     initialBalance: number;
     resolution?: string;
     note: string;
+    /** What the run is filed under, for finding it again. Absent on a run stored before tags existed. */
+    tags?: string[];
+    /** How many images the journal holds for it. Absent on a run stored before the journal existed. */
+    shots?: number;
     stats: Pick<MidoriRunStats,
         'netPnl' | 'returnPct' | 'winRate' | 'tradeCount' | 'maxDrawdownPct' | 'profitFactor' | 'expectancy' | 'feesPaid'>;
 }
@@ -363,6 +385,17 @@ export interface MidoriRun extends Omit<MidoriRunSummary, 'stats'> {
     /** Says the curve is the condensed one, so nothing mistakes its length for a bar count. */
     equityCondensed?: boolean;
     params: Record<string, unknown>;
+    /** The images in the journal, oldest first — their bytes are fetched one at a time. */
+    shots?: MidoriRunShot[];
+}
+
+/** One image in a run's journal. */
+export interface MidoriRunShot {
+    id: string;
+    type: 'png' | 'jpeg';
+    bytes: number;
+    takenAt: number;
+    label: string;
 }
 
 /** The running paper account — a `LiveSession.snapshot()` and the market it trades. */
@@ -1131,11 +1164,16 @@ declare global {
                     ticks?: string | null;
                     /** The charts beside the one that trades — see replay/replayMirrors.ts. */
                     grid?: MidoriReplayGrid;
+                    /** Snapshots taken for the journal, filed with the run when the session is finished. */
+                    shots?: Array<{ png: string; takenAt: number; label?: string }>;
                     stats?: Record<string, unknown>;
                 }): Promise<{ id: string }>;
-                sessions(): Promise<MidoriSessionRecord[]>;
+                sessions(): Promise<MidoriSessionSummary[]>;
                 loadSession(id: string): Promise<MidoriSessionRecord | null>;
                 deleteSession(id: string): Promise<boolean>;
+                renameSession(id: string, name: string): Promise<{ id: string; name: string }>;
+                /** Stores a copy under a new id — the original is left as it was. */
+                duplicateSession(id: string): Promise<{ id: string }>;
             };
             /** The paper account — one record, not a library. A FINISHED one goes to
              *  `replay.save` instead, onto the same shelf backtests and replays land on. */
@@ -1211,6 +1249,13 @@ declare global {
                 delete(id: string): Promise<boolean>;
                 /** Replaces the run's note and answers with what was stored. */
                 annotate(id: string, note: string): Promise<string>;
+                /** Replaces the run's tags with the cleaned list and answers with what was stored. */
+                setTags(id: string, tags: string[]): Promise<string[]>;
+                /** Attaches a PNG or JPEG to the run's journal. Rejects with the reason where it is refused. */
+                addShot(id: string, shot: { data: Uint8Array; label?: string; takenAt?: number }): Promise<MidoriRunShot>;
+                /** One image's bytes. */
+                shot(id: string, shotId: string): Promise<{ type: 'png' | 'jpeg'; data: Uint8Array }>;
+                removeShot(id: string, shotId: string): Promise<boolean>;
             };
             /** Optional, anonymous chart data. This surface deliberately exposes no
              *  automation, backtest, alert, or order operation. */

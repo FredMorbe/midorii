@@ -39,6 +39,12 @@ export declare class ReplaySession {
         costs?: Costs;
         stepMs?: number | null;
         mode?: PositionMode;
+        /** Money per point per unit — 1 unless an instrument says otherwise. */
+        pointValue?: number;
+        /** The smallest a size may move by, or null for no step. */
+        sizeStep?: number | null;
+        /** The least a position may ever be, or null for no minimum. */
+        minSize?: number | null;
     });
 
     readonly broker: Broker;

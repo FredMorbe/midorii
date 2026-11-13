@@ -25,6 +25,9 @@ import path from 'node:path';
 /** Guards against a runaway loop filling the disk. */
 const MAX_SESSIONS = 200;
 
+/** A session's name is a label, not a document. */
+const MAX_NAME = 120;
+
 /* Ids are generated here and never come from the renderer, but they still
  * shape a filename, so they are checked on the way in and out regardless. */
 const SAFE_ID = /^s[0-9a-z]{6,32}$/;
@@ -164,4 +167,29 @@ export async function deleteSession(dir, id) {
   const index = (await listSessions(dir)).filter((s) => s.id !== id);
   await writeAtomic(path.join(dir, INDEX_FILE), index);
   return true;
+}
+
+/**
+ * Renames a stored session without touching when it was put down: the list is ordered by that,
+ * and a name is a label rather than a sitting.
+ */
+export async function renameSession(dir, id, name) {
+  const file = sessionFile(dir, id);
+  const record = JSON.parse(await readFile(file, 'utf8'));
+  record.name = typeof name === 'string' ? name.trim().slice(0, MAX_NAME) : '';
+  await writeAtomic(file, record);
+
+  const index = await listSessions(dir);
+  await writeAtomic(path.join(dir, INDEX_FILE), index.map((s) => (s.id === id ? summarize(record) : s)));
+  return { id, name: record.name };
+}
+
+/**
+ * Stores a copy of a session under a new id, so one position can be played out two ways.
+ * Nothing but the id and the name is different, and the original is left exactly as it was.
+ */
+export async function duplicateSession(dir, id) {
+  const record = await loadSession(dir, id);
+  const base = record.name || 'Untitled';
+  return saveSession(dir, { ...record, id: null, name: `${base} (copy)`.slice(0, MAX_NAME) });
 }

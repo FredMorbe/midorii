@@ -1,5 +1,5 @@
 import { formatMoney, formatPercent } from '../format';
-import { propGuard, type PropGuard } from './accountRules';
+import { propGuard, type PropGuard, type PropGuardOptions } from './accountRules';
 import { openPropRules } from './propRulesDialog';
 import { limitRefusal, type Exposure, type PropStanding, type RiskLimits } from './riskLimits';
 import type { BandAction, BandColumn } from './accountBand';
@@ -47,7 +47,17 @@ export interface PropWiring {
     enforce(): void;
 }
 
-export interface PropWiringOptions {
+export interface PropWiringOptions extends PropGuardOptions {
+    /**
+     * The instant the account is judged at. Absent means the wall clock, which is right for an
+     * account trading now; a replay passes its own, since its "today" is the market's.
+     */
+    now?: () => number;
+    /**
+     * Whether there is no venue behind the account at all. The messages then stop sending
+     * somebody to "check the venue", which for a simulated account is a place that does not exist.
+     */
+    simulated?: boolean;
     /** The account's key, spelled as the trade menu spells it: `projectx:1234`, `capital:live`. */
     account: string;
     /** What the account is called, for the dialog's heading. */
@@ -108,15 +118,24 @@ export function flattenAll(account: {
 }
 
 export function wireProp(opts: PropWiringOptions): PropWiring {
-    const guard: PropGuard = propGuard(opts.account);
+    const guard: PropGuard = propGuard(opts.account, {
+        ...(opts.ephemeralMark !== undefined ? { ephemeralMark: opts.ephemeralMark } : {}),
+        ...(opts.startBalance ? { startBalance: opts.startBalance } : {}),
+    });
     const money = (n: number): string => formatMoney(n);
+    const reading = () => ({
+        equity: opts.equity(),
+        openPnl: opts.openPnl(),
+        history: opts.history(),
+        ...(opts.now ? { now: opts.now() } : {}),
+    });
 
-    let standing = guard.read({ equity: opts.equity(), openPnl: opts.openPnl(), history: opts.history() });
+    let standing = guard.read(reading());
     /** Whether the breach on the table has already been acted on — see {@link PropWiring.enforce}. */
     let acted = false;
 
     const read = (): PropStanding => {
-        standing = guard.read({ equity: opts.equity(), openPnl: opts.openPnl(), history: opts.history() });
+        standing = guard.read(reading());
         return standing;
     };
 
@@ -207,8 +226,8 @@ export function wireProp(opts: PropWiringOptions): PropWiring {
             acted = true;
             const what = standing.breached === 'mll' ? 'maximum loss limit' : 'loss limit for this session';
             opts.notify(
-                `The ${what} is past — closing everything, which is what this account is set to do. `
-                + 'Check the venue itself before trading again.',
+                `The ${what} is past — closing everything, which is what this account is set to do.`
+                + (opts.simulated ? '' : ' Check the venue itself before trading again.'),
                 'error',
             );
             try {
@@ -217,8 +236,8 @@ export function wireProp(opts: PropWiringOptions): PropWiring {
                 /* Said out loud rather than swallowed: an account that was told to flatten and
                  * could not is the one case where somebody must go and look at the venue. */
                 opts.notify(
-                    `Could not close out on the breach: ${err instanceof Error ? err.message : String(err)}. `
-                    + 'Close the position at the venue.',
+                    `Could not close out on the breach: ${err instanceof Error ? err.message : String(err)}.`
+                    + (opts.simulated ? ' Close the positions yourself.' : ' Close the position at the venue.'),
                     'error',
                 );
             }
