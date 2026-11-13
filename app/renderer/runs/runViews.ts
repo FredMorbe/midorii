@@ -40,6 +40,10 @@ const CSS = `
 .midorii-figures .down { color: var(--vela-down); }
 .midorii-figures .muted { color: var(--vela-fg-muted); }
 .midorii-figures .market { color: var(--vela-fg-bright); font-weight: 600; }
+.midorii-figures .tag { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; background: var(--vela-active); color: var(--vela-fg); font-size: 11px; font-weight: 500; }
+.midorii-figures tbody tr[data-trade-index] { cursor: pointer; }
+.midorii-figures tbody tr[data-trade-index]:hover { background: var(--vela-hover); }
+.midorii-figures tbody tr[aria-current='true'] { background: var(--vela-active); }
 
 .midorii-figures-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--vela-border-faint); border: 1px solid var(--vela-border-faint); border-radius: var(--vela-radius-sm); overflow: hidden; margin-bottom: 14px; }
 .midorii-figures-tile { padding: 8px 10px; background: var(--vela-surface); }
@@ -296,6 +300,12 @@ export function runsTable(
             who.className = 'muted';
             who.textContent = `  ${run.strategyName}`;
             market.appendChild(who);
+        }
+        for (const tag of run.tags ?? []) {
+            const chip = document.createElement('span');
+            chip.className = 'tag';
+            chip.textContent = tag;
+            market.appendChild(chip);
         }
 
         tr.append(

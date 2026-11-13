@@ -39,6 +39,7 @@ import { paletteOf, type AppStyle, type AppThemeName } from './shell/themes';
 import { installTradeMenu } from './trading/tradeMode';
 import { installAlerts } from './alerts/installAlerts';
 import { installQuotes } from './quotes/installQuotes';
+import { installWatchlist } from './watchlist/installWatchlist';
 import { wireOverlaySettings } from './replay/overlaySettings';
 
 /** Stable sources shared by charts, alerts, and bots, plus an optional chart-only source. */
@@ -217,6 +218,7 @@ function repaint(): void {
     mountedReplayWs?.setTheme(t);
     replayHub?.setTheme(t);
     backtestView?.setTheme(t);
+    analysisView?.setTheme(t);
     ensureUIHost(document.body, t);
     // The Trading Bot tab builds a chart of its own, which is wearing the old palette until
     // it is told otherwise. Only if it has ever been opened — nothing is built before that.
@@ -352,6 +354,12 @@ installAlerts(workspace, providers());
  * the gap between the sides is costing. Absent on markets that quote a single price. */
 installQuotes(workspace);
 
+/* The watchlist: markets to follow with their price and day change, a click away from the
+ * chart. Its prices are only streamed while its panel is open. A replay's or a bot's chart is
+ * tied to a session, so the list does not drive those. */
+const watchlist = installWatchlist(workspace, providers(), (ctx) => !isReplayContext(ctx) && !isBotContext(ctx));
+(window as unknown as { __watchlist: typeof watchlist }).__watchlist = watchlist;
+
 /* Which cards this chart puts on its plot — behind the chart's own gear, with the rest of what
  * a chart looks like. A replay wires its own; this is the one every other account trades on. */
 wireOverlaySettings(workspace);
@@ -362,7 +370,7 @@ wireOverlaySettings(workspace);
  * should be instant, the way the replay view is. */
 let analysisView: AnalysisViewHandle | null = null;
 function analysis(): AnalysisViewHandle {
-    analysisView ??= mountAnalysisView(analysisRoot, { liveAccount: () => trading.account });
+    analysisView ??= mountAnalysisView(analysisRoot, { liveAccount: () => trading.account, theme: palette });
     return analysisView;
 }
 

@@ -9,8 +9,12 @@ Vela's — the charting library Midorii is built on and forked from.
 
 - **Keep a journal for every replay.** Ending a session now asks what you saw and what to file it
   under — a note and tags, both optional — and a new button in the top bar keeps a snapshot of the
-  chart at any moment of the session. The snapshots are filed with the run, and survive putting
-  the session down and picking it up again.
+  chart at any moment of the session; the snapshots are filed with the run, and survive putting
+  the session down and picking it up again. In Analysis, a filed run opens with a Journal panel
+  where the note and the tags can be edited in place and images can be added, dropped or pasted,
+  opened large and removed. A Trade chart panel draws any trade of the run on its candles, with
+  its entry, exit, stop and target, and follows the trade you pick in the list. The sessions shelf
+  shows each run's tags and can be narrowed to one.
 
 - **Trade a replay like a funded account.** The ticket beside the chart now has a History tab
   with every trade the session has closed, the quick-size buttons and the sizing choice are
@@ -43,6 +47,30 @@ Vela's — the charting library Midorii is built on and forked from.
   (hedging, on by default). Pick a recorded futures contract and the dialog fills these in from
   the contract's own tick size and value — costs off, whole contracts only — and says so; change
   any of them and your choice stands.
+
+- **Arrange the bot screen your way.** A bot's Live view is now six panels — status, account,
+  chart, open position, activity and safety rules. Drag a panel by its title to move it into
+  another column, or to the edge of a column to give it one of its own (up to four). Drag the
+  lines between panels to change their height and width, and the line beside the bot list to
+  change its width; double-click a line to put it back. **Layout → Reset layout** restores the
+  default, and your arrangement is remembered for every bot. The safety rules panel shows what
+  the bot is set to and, while it runs, why it is not trading when something is in the way.
+  The bot list groups bots under Running and Not running while any is running. On a narrow
+  window the panels stack and cannot be moved.
+
+- **Set a bot up step by step.** A bot's settings are now four numbered steps — market, account,
+  strategy and safety rules — with a bar that jumps to each one. Beside them, "In plain words"
+  reads your choices back as sentences, and a checklist says whether the bot is ready to start.
+  Fine-tuning the strategy sits in a fold you open when you want it. A bot that cannot start
+  yet shows **Finish setup** instead of Start and takes you to the step that is missing
+  something. While a bot runs, its settings are shown as a read-only sheet rather than as
+  disabled fields.
+
+- **Arrange an account in Analysis your way.** Opening an account or session now shows its
+  summary, equity curve, breakdown, settings and trades as panels you can move and resize the
+  same way as on the bot screen, with **Layout → Reset layout** to put them back. The
+  arrangement is remembered. Analysis, Backtest, Patterns, Strategies and Settings also share
+  one header: the screen's name, a line about what it is for, and its views as tabs.
 
 - **Show several charts at once.** The Chart tab has a layout menu beside the symbol: pick a
   grid of up to sixteen charts and give each one its own market and bar interval. Price
@@ -110,6 +138,15 @@ Vela's — the charting library Midorii is built on and forked from.
   hand count toward the daily loss and not toward the position cap. The demo and the live
   account each keep their own limits, both limits are off at 0, and neither ever closes a
   trade.
+
+- **Follow your markets in a Watchlist.** A new star button in the chart's top bar opens a
+  Watchlist panel with each market's last price and how far it has moved since the previous
+  daily close, updating live. Click a row to put that market on the chart, or walk through the
+  list with the up and down arrow keys. Add markets with the plus button, which opens the usual
+  symbol search, or right-click the chart and choose Add to Watchlist. Drag rows to reorder them,
+  add section headings to group them, and keep several named lists — switch, create, rename and
+  delete them from the list name at the top of the panel. Prices are only fetched while the panel
+  is open, and your lists are kept between sessions.
 
 ### Changed
 

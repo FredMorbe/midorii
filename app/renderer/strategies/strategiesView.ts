@@ -4,6 +4,7 @@ import { fieldGrid, paramField } from './paramFields';
 import type { StrategyInfo, StrategyParams } from './types';
 import { refreshResearchStrategies } from './researchLibrary';
 import { button, ensureFigureStyles, sectionLabel } from '../runs/runViews';
+import { screenHead } from '../shell/screenHead';
 
 /**
  * The Strategies tab: what this app can trade on its own, and what each one is set to.
@@ -41,13 +42,6 @@ const CSS = `
     background: var(--vela-bg);
     color: var(--vela-fg);
     font: 13px/1.5 var(--vela-font, sans-serif);
-}
-.midorii-strategies-bar {
-    flex: none;
-    display: flex; align-items: center; gap: 10px;
-    height: 34px; padding: 0 14px;
-    border-bottom: 1px solid var(--vela-border);
-    font-size: 12px; color: var(--vela-fg-muted);
 }
 .midorii-strategies-main { flex: 1 1 auto; min-height: 0; display: flex; }
 
@@ -123,11 +117,10 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
     const root = doc.createElement('div');
     root.className = 'midorii-strategies midorii-figures';
 
-    const bar = doc.createElement('div');
-    bar.className = 'midorii-strategies-bar';
-    const barLabel = doc.createElement('span');
-    barLabel.textContent = 'Strategies';
-    bar.appendChild(barLabel);
+    const head = screenHead(doc, {
+        title: 'Strategies',
+        sub: 'What this app can trade on its own, and what each strategy is set to.',
+    });
 
     const main = doc.createElement('div');
     main.className = 'midorii-strategies-main';
@@ -140,7 +133,7 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
     body.appendChild(inner);
     main.append(list, body);
 
-    root.append(bar, main);
+    root.append(head.el, main);
     host.appendChild(root);
 
     let catalog = strategyCatalog();

@@ -1,7 +1,8 @@
 import { injectStyles, overlayScrollbarCss } from '../../../src/ui';
+import type { VelaTheme } from '../../../src';
 import { formatDuration } from '../../../src/core/drawings';
 import type {
-    MidoriEquityPoint, MidoriRunStats, MidoriRunSummary, MidoriSweep, MidoriSweepSummary, MidoriTrade,
+    MidoriEquityPoint, MidoriRunShot, MidoriRunStats, MidoriRunSummary, MidoriSweep, MidoriSweepSummary, MidoriTrade,
 } from '../midori';
 import { formatDay, formatMoney, formatPercent, formatPrice, formatR, formatSignedMoney, formatSize, formatWhen } from '../format';
 import {
@@ -17,6 +18,11 @@ import type { LiveTradeRecord } from '../trading/CapitalController';
 import { PaperAccount, type PaperAccountExtra } from '../trading/PaperAccount';
 import { loadPaperSettings } from '../trading/paperSettings';
 import { tradeBreakdown } from './analysisFigures';
+import { ANALYSIS_BOARD, type AnalysisPanelId } from './analysisBoard';
+import { screenHead } from '../shell/screenHead';
+import { attachLayoutMenu, createLayoutStore, mountPanelBoard, type PanelBoard } from '../shell/panelBoard';
+import { mountRunJournal, type JournalPatch } from './runJournal';
+import { mountRunReview, type RunReview } from './runReview';
 
 /**
  * The Analysis tab: every account this app has traded, and what each one did.
@@ -42,25 +48,27 @@ const CSS = `
     color: var(--vela-fg);
     font: 13px/1.5 var(--vela-font, sans-serif);
 }
-.midorii-analysis-bar {
-    flex: none;
-    display: flex; align-items: center; gap: 8px;
-    height: 34px; padding: 0 14px;
-    border-bottom: 1px solid var(--vela-border);
-}
-.midorii-analysis-seg { display: inline-flex; gap: 2px; }
-.midorii-analysis-tab {
-    all: unset;
-    padding: 4px 12px; border-radius: var(--vela-radius-sm);
-    font-size: 12px; font-weight: 600; color: var(--vela-fg-muted); cursor: pointer;
-}
-.midorii-analysis-tab:hover { background: var(--vela-hover); color: var(--vela-fg-bright); }
-.midorii-analysis-tab[data-active='1'] { background: var(--vela-active); color: var(--vela-fg-bright); }
-.midorii-analysis-spacer { flex: 1 1 auto; }
-
 .midorii-analysis-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 ${overlayScrollbarCss('.midorii-analysis-body')}
 .midorii-analysis-inner { max-width: 1100px; margin: 0 auto; padding: 16px 18px 32px; }
+
+/* One account or session in full: a toolbar, then movable panels that fill the screen. */
+.midorii-analysis-body[data-board='1'] { overflow: hidden; display: flex; flex-direction: column; }
+.midorii-analysis-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.midorii-analysis-tags .vela-dialog-btn[aria-pressed='true'] { background: var(--vela-active); color: var(--vela-fg-bright); }
+.midorii-analysis-stage { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.midorii-analysis-stage[hidden], .midorii-analysis-inner[hidden] { display: none; }
+.midorii-analysis-detail-bar {
+    flex: none; display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+    border-bottom: 1px solid var(--vela-border);
+}
+.midorii-analysis-detail-title { flex: 1 1 auto; min-width: 0; }
+.midorii-analysis-detail-title .midorii-analysis-head { margin-bottom: 0; }
+.midorii-analysis-detail-title .midorii-analysis-sub { margin: 2px 0 0; }
+.midorii-analysis-pad { padding: 2px 14px 14px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.midorii-analysis-pad .midorii-figures-grid { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
+.midorii-analysis-pad .midorii-figures-grid:last-child { margin-bottom: 0; }
+.midorii-analysis-fill > .midorii-figures-curve { flex: 1 1 auto; height: auto !important; min-height: 72px; margin-bottom: 0; }
 
 .midorii-analysis-card {
     padding: 12px 14px; margin-bottom: 20px;
@@ -110,6 +118,11 @@ interface Subject {
     /** Set for a stored run, so it can be deleted and annotated. Absent for the live account. */
     runId?: string;
     note?: string;
+    /** What a stored run is filed under, and the images in its journal. */
+    tags?: string[];
+    shots?: MidoriRunShot[];
+    /** The market a stored run was traded on — what its trades are drawn against. */
+    market?: { symbol: string; timeframe: string };
     /** Set on the paper account that is still open. */
     running?: boolean;
     /**
@@ -125,6 +138,8 @@ interface Subject {
 }
 
 export interface AnalysisViewOptions {
+    /** The chart palette, for the trade chart a stored run draws its trades on. */
+    theme: () => VelaTheme;
     /** The paper account the chart is trading right now, or null. Read fresh on every
      *  refresh: switching Trade off between two visits changes the answer. */
     liveAccount: () => PaperAccount | null;
@@ -133,6 +148,8 @@ export interface AnalysisViewOptions {
 export interface AnalysisViewHandle {
     /** Re-read the shelves and repaint. Called whenever the tab is opened. */
     refresh(): Promise<void>;
+    /** Repaint the trade chart, if one is open, in a new palette. */
+    setTheme(theme: VelaTheme): void;
 }
 
 /** The breakdown the run's own stats block does not answer. */
@@ -173,39 +190,49 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
     const root = doc.createElement('div');
     root.className = 'midorii-analysis midorii-figures';
 
-    const bar = doc.createElement('div');
-    bar.className = 'midorii-analysis-bar';
-    const seg = doc.createElement('div');
-    seg.className = 'midorii-analysis-seg';
-    const spacer = doc.createElement('div');
-    spacer.className = 'midorii-analysis-spacer';
+    const head = screenHead(doc, {
+        title: 'Analysis',
+        sub: 'Every account this app has traded, and what each one did.',
+        tabs: [{ id: 'accounts', label: 'Accounts' }, { id: 'sessions', label: 'Sessions' }, { id: 'sweeps', label: 'Sweeps' }],
+        onTab: (id) => {
+            pane = id as AnalysisPane;
+            open = null;
+            openSweep = null;
+            paint();
+        },
+    });
     const reload = button('Refresh');
     reload.onclick = () => void refresh();
-    bar.append(seg, spacer, reload);
+    head.actions.appendChild(reload);
 
     const body = doc.createElement('div');
     body.className = 'midorii-analysis-body';
     const inner = doc.createElement('div');
     inner.className = 'midorii-analysis-inner';
-    body.appendChild(inner);
+    const stage = doc.createElement('div');
+    stage.className = 'midorii-analysis-stage';
+    stage.hidden = true;
+    body.append(inner, stage);
 
-    root.append(bar, body);
+    root.append(head.el, body);
     host.appendChild(root);
 
-    const paneButtons = new Map<AnalysisPane, HTMLButtonElement>();
-    for (const [id, label] of [['accounts', 'Accounts'], ['sessions', 'Sessions'], ['sweeps', 'Sweeps']] as const) {
-        const b = doc.createElement('button');
-        b.className = 'midorii-analysis-tab';
-        b.textContent = label;
-        b.onclick = () => {
-            pane = id;
-            open = null;
-            openSweep = null;
-            paint();
-        };
-        paneButtons.set(id, b);
-        seg.appendChild(b);
-    }
+    /* How the panels of an open account sit is remembered per machine, like the bot screen's.
+     * Storage can be unavailable (a locked-down profile); the store copes with that. */
+    let storage: Storage | null = null;
+    try { storage = doc.defaultView?.localStorage ?? null; } catch { storage = null; }
+    const layoutStore = createLayoutStore(ANALYSIS_BOARD, storage);
+    let board: PanelBoard | null = null;
+    /** What the open run's panels hold that outlives their elements: a chart, object URLs, a paste listener. */
+    let panelParts: Array<{ dispose(): void }> = [];
+    let review: RunReview | null = null;
+    /** The tag the sessions shelf is narrowed to, or null for all of it. */
+    let tagFilter: string | null = null;
+    const disposePanelParts = (): void => {
+        for (const part of panelParts) part.dispose();
+        panelParts = [];
+        review = null;
+    };
 
     let pane: AnalysisPane = 'accounts';
     /** The account being looked at in full, or null while a shelf is on screen. */
@@ -299,6 +326,10 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
     /* ── painting ────────────────────────────────────────────────────────── */
 
     function paintError(err: unknown): void {
+        // An error is shown on the page, so a board that happens to be open gives way to it.
+        body.dataset.board = '0';
+        stage.hidden = true;
+        inner.hidden = false;
         inner.replaceChildren();
         const p = doc.createElement('p');
         p.className = 'midorii-analysis-empty midorii-analysis-error';
@@ -360,9 +391,19 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
         return card;
     }
 
-    /** One account or session in full. */
+    /** A panel's content, padded the way every panel here is. `fill` lets a chart take the height. */
+    function pad(content: Element, fill = false): HTMLElement {
+        const el = doc.createElement('div');
+        el.className = fill ? 'midorii-analysis-pad midorii-analysis-fill' : 'midorii-analysis-pad';
+        el.appendChild(content);
+        return el;
+    }
+
+    /** One account or session in full: what it is on top, its figures in panels below. */
     function detail(subject: Subject): void {
-        inner.replaceChildren();
+        board?.dispose();
+        disposePanelParts();
+        stage.replaceChildren();
 
         const back = button(pane === 'accounts' ? '← Accounts' : '← Sessions');
         back.onclick = () => {
@@ -370,9 +411,21 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
             paint();
         };
 
-        const actions = doc.createElement('div');
-        actions.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:14px';
-        actions.appendChild(back);
+        const title = doc.createElement('div');
+        title.className = 'midorii-analysis-detail-title';
+        title.append(
+            heading(
+                subject.title,
+                subject.label,
+                subject.running == null ? undefined : { text: subject.running ? 'Running' : 'Paused', live: subject.running },
+            ),
+            subLine(subject.sub),
+        );
+        const bar = doc.createElement('div');
+        bar.className = 'midorii-analysis-detail-bar';
+        const layoutButton = button('Layout');
+        attachLayoutMenu(layoutButton, root, layoutStore);
+        bar.append(back, title, layoutButton);
 
         if (subject.runId) {
             const remove = button('Delete', 'danger');
@@ -384,52 +437,77 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
                 }
                 removeRun(subject.runId!);
             };
-            const right = doc.createElement('div');
-            right.style.cssText = 'margin-left:auto';
-            right.appendChild(remove);
-            actions.appendChild(right);
+            bar.appendChild(remove);
         }
-
-        inner.append(
-            actions,
-            heading(
-                subject.title,
-                subject.label,
-                subject.running == null ? undefined : { text: subject.running ? 'Running' : 'Paused', live: subject.running },
-            ),
-            subLine(subject.sub),
-        );
-
-        /* Read-only on purpose. The note is written where the run is filed — in the Runs
-         * dialog — and a second editor for the same text is a second thing to keep in step. */
-        if (subject.note) {
-            const note = doc.createElement('p');
-            note.className = 'midorii-analysis-sub midorii-analysis-note';
-            note.textContent = subject.note;
-            inner.appendChild(note);
-        }
-
-        inner.append(
-            statGrid(subject.stats),
-            equityCurveSvg(subject.equityCurve, subject.initialBalance, subject.stats.netPnl, 160),
-        );
 
         /* What produced it. A backtest without its settings is a number nobody can act on,
          * and a hand-traded session genuinely has none — the risk on each trade was decided
-         * as it was taken — so the section is absent rather than empty. */
+         * as it was taken — so the panel says that rather than sitting empty. */
         const described = subject.params && subject.strategyId
             ? describeParams(subject.strategyId, subject.params)
             : [];
-        if (described.length > 0) {
-            inner.append(sectionLabel('Settings'), settingsGrid(described));
+
+        /* The journal and the trade chart belong to a stored run: the trades of a paper account that
+         * is still open are not on any candles this screen can read back, and it has no filing to
+         * annotate. Those two say so rather than sitting empty. */
+        let journalBody: HTMLElement;
+        let reviewBody: HTMLElement;
+        let tradesBody: HTMLElement;
+        if (subject.runId && subject.market) {
+            const journal = mountRunJournal(
+                doc,
+                { id: subject.runId, note: subject.note ?? '', tags: subject.tags ?? [], shots: subject.shots ?? [] },
+                (patch) => noteJournalChange(subject, patch),
+            );
+            panelParts.push(journal);
+            journalBody = journal.el;
+
+            const shown = mountRunReview(doc, {
+                symbol: subject.market.symbol,
+                timeframe: subject.market.timeframe,
+                trades: subject.trades,
+                theme: opts.theme,
+                onSelect: (index) => {
+                    for (const row of tradesBody?.querySelectorAll<HTMLTableRowElement>('tr[data-trade-index]') ?? []) {
+                        if (Number(row.dataset.tradeIndex) === index) {
+                            row.setAttribute('aria-current', 'true');
+                            row.scrollIntoView({ block: 'nearest' });
+                        } else {
+                            row.removeAttribute('aria-current');
+                        }
+                    }
+                },
+            });
+            panelParts.push(shown);
+            review = shown;
+            reviewBody = pad(shown.el, true);
+            tradesBody = pad(tradesTable(subject.trades, { selectedIndex: 0, onSelect: (index) => shown.select(index) }));
+        } else {
+            journalBody = pad(empty('Only a filed run has a journal. End a replay session, or run a backtest, '
+                + 'and what you note about it is kept with it.'));
+            reviewBody = pad(empty('Trades are drawn on their candles for a filed run.'));
+            tradesBody = pad(tradesTable(subject.trades));
         }
 
-        inner.append(
-            sectionLabel('Breakdown'),
-            breakdownGrid(subject),
-            sectionLabel(`Trades (${subject.trades.length})`),
-            tradesTable(subject.trades),
-        );
+        board = mountPanelBoard<AnalysisPanelId>(doc, layoutStore, {
+            review: { title: 'Trade chart', body: reviewBody },
+            journal: { title: 'Journal', body: journalBody },
+            summary: { title: 'Summary', body: pad(statGrid(subject.stats)) },
+            equity: {
+                title: 'Equity',
+                body: pad(equityCurveSvg(subject.equityCurve, subject.initialBalance, subject.stats.netPnl, 160), true),
+            },
+            breakdown: { title: 'Breakdown', body: pad(breakdownGrid(subject)) },
+            settings: {
+                title: 'Settings',
+                body: pad(described.length > 0
+                    ? settingsGrid(described)
+                    : empty('No strategy settings were stored with this one. A hand-traded account has none: '
+                        + 'the risk on each trade was decided as it was taken.')),
+            },
+            trades: { title: `Trades (${subject.trades.length})`, body: tradesBody },
+        });
+        stage.append(bar, board.el);
     }
 
     /** Load a stored run and show it in full. */
@@ -447,6 +525,9 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
                 trades: run.trades,
                 runId: run.id,
                 note: run.note,
+                tags: run.tags ?? [],
+                shots: run.shots ?? [],
+                market: { symbol: run.symbol, timeframe: run.timeframe },
                 params: run.params,
                 strategyId: run.strategy,
             };
@@ -720,17 +801,66 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
     }
 
     function paintSessions(): void {
-        inner.append(sectionLabel(`Backtests and replays (${sessions.length})`));
+        const filed = new Set(sessions.flatMap((r) => r.tags ?? []));
+        if (tagFilter !== null && !filed.has(tagFilter)) tagFilter = null; // the last run with it was deleted
+        const shown = tagFilter === null ? sessions : sessions.filter((r) => r.tags?.includes(tagFilter!));
+        inner.append(sectionLabel(`Backtests and replays (${shown.length}${shown.length === sessions.length ? '' : ` of ${sessions.length}`})`));
+        if (filed.size > 0) inner.append(tagBar([...filed].sort((a, b) => a.localeCompare(b))));
         inner.append(sessions.length === 0
             ? empty('Nothing here yet. Play a replay session to the end, or run a backtest, and it lands on '
                 + 'this shelf.')
-            : runsTable(sessions, (id) => void openRun(id), { onDelete: removeRun }));
+            : runsTable(shown, (id) => void openRun(id), { onDelete: removeRun }));
+    }
+
+    /** The tags in use, as a row of buttons that narrow the shelf to one. */
+    function tagBar(all: readonly string[]): HTMLElement {
+        const bar = doc.createElement('div');
+        bar.className = 'midorii-analysis-tags';
+        bar.setAttribute('role', 'group');
+        bar.setAttribute('aria-label', 'Filter by tag');
+        for (const tag of [null, ...all]) {
+            const chip = button(tag ?? 'All');
+            chip.setAttribute('aria-pressed', String(tagFilter === tag));
+            chip.onclick = () => {
+                tagFilter = tag;
+                paint();
+            };
+            bar.appendChild(chip);
+        }
+        return bar;
+    }
+
+    /** What the journal changed on a run, kept in the lists so going back shows it without a re-read. */
+    function noteJournalChange(subject: Subject, patch: JournalPatch): void {
+        if (patch.note !== undefined) subject.note = patch.note;
+        if (patch.tags !== undefined) subject.tags = patch.tags;
+        for (const shelf of [sessions, accounts]) {
+            const at = shelf.findIndex((r) => r.id === subject.runId);
+            if (at < 0) continue;
+            const row = shelf[at]!;
+            shelf[at] = {
+                ...row,
+                ...(patch.note !== undefined ? { note: patch.note } : {}),
+                ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+                ...(patch.shots !== undefined ? { shots: patch.shots } : {}),
+            };
+        }
     }
 
     function paint(): void {
-        for (const [id, b] of paneButtons) {
-            if (id === pane) b.dataset.active = '1';
-            else delete b.dataset.active;
+        head.setActive(pane);
+
+        /* A single account is a board of panels that fills the screen; everything else is a page
+         * that scrolls. The two live side by side so a board is only built when one is opened. */
+        const boarded = open !== null;
+        body.dataset.board = boarded ? '1' : '0';
+        stage.hidden = !boarded;
+        inner.hidden = boarded;
+        if (!boarded) {
+            board?.dispose();
+            board = null;
+            disposePanelParts();
+            stage.replaceChildren();
         }
 
         if (open) {
@@ -749,5 +879,8 @@ export function mountAnalysisView(host: HTMLElement, opts: AnalysisViewOptions):
     }
 
     paint();
-    return { refresh };
+    return {
+        refresh,
+        setTheme: (theme) => review?.setTheme(theme),
+    };
 }

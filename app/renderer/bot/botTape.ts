@@ -23,14 +23,14 @@ import type { BotConfig } from './botTypes';
 const STYLE_ID = 'midorii-bot-tape';
 const CSS = `
 .midorii-tape-heading {
-    flex: none; display: flex; align-items: center; gap: 14px; padding: 0 14px;
+    flex: none; display: flex; align-items: center; gap: 14px; padding: 0 14px; overflow: hidden;
     min-height: 39px;
     border-bottom: 1px solid var(--vela-border);
     color: var(--vela-fg-muted); font: 11px/1.4 var(--vela-font, sans-serif);
 }
 .midorii-tape-tabs { display: flex; align-self: stretch; gap: 14px; }
 .midorii-tape-tab {
-    border: 0; border-bottom: 2px solid transparent; padding: 0 2px;
+    border: 0; border-bottom: 2px solid transparent; padding: 0 2px; white-space: nowrap;
     background: transparent; color: var(--vela-fg-muted);
     font: 600 11.5px var(--vela-font, sans-serif); cursor: pointer;
 }
@@ -40,9 +40,9 @@ const CSS = `
     color: var(--vela-fg-bright);
 }
 .midorii-tape-tab:focus-visible { outline: 2px solid var(--vela-accent-bright, #2962ff); outline-offset: -3px; }
-.midorii-tape-hint { margin-left: auto; text-align: right; }
+.midorii-tape-hint { margin-left: auto; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .midorii-tape { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 0;
-    font: 12px/1.5 var(--vela-font, sans-serif); }
+    font: 12px/1.5 var(--vela-font, sans-serif); container-type: inline-size; }
 .midorii-tape-trade {
     display: grid; grid-template-columns: 145px 105px minmax(150px, 1fr) 115px;
     gap: 14px; align-items: center; padding: 7px 16px;
@@ -84,6 +84,10 @@ const CSS = `
 .midorii-tape-empty p { margin: 3px 0 0; max-width: 700px; }
 @media (max-width: 700px) {
     .midorii-tape-hint { display: none; }
+}
+/* The tape is a panel a person can make as narrow as they like, so its rows answer to the
+   panel's width and not the window's. */
+@container (max-width: 560px) {
     .midorii-tape-trade { grid-template-columns: 1fr auto; gap: 2px 10px; }
     .midorii-tape-trade-prices { grid-column: 1; }
     .midorii-tape-trade-result { grid-column: 2; grid-row: 1 / span 2; }

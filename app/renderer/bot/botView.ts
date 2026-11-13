@@ -16,9 +16,12 @@ import { STRATEGIES } from '../strategies';
 import { BotEngine } from './BotEngine';
 import { setBotChart } from './botChart';
 import type { BotRunner } from './BotRunner';
-import { mountBotForm, type BotForm } from './botForm';
+import { mountBotForm, setupProblem, type BotForm, type SetupProblem, type SetupSection } from './botForm';
 import { botId, newBot, type BotConfig } from './botTypes';
 import { botTape } from './botTape';
+import { attachLayoutMenu, createLayoutStore, mountFleetGutter, mountPanelBoard, type LayoutStore } from '../shell/panelBoard';
+import { BOT_BOARD, type PanelId } from './botBoard';
+import { ruleRows } from './botRules';
 import { createAssetPicker } from './assetPicker';
 import { askToArm } from '../trading/capitalArmDialog';
 import { resolveStrategyParams } from '../strategies';
@@ -68,9 +71,17 @@ const CSS = `
 .midorii-bot-main { flex: 1 1 auto; min-height: 0; display: flex; }
 
 .midorii-bot-list {
-    flex: none; width: 240px; padding: 8px;
-    border-right: 1px solid var(--vela-border);
+    flex: none; width: 272px; padding: 8px;
     overflow: auto;
+}
+.midorii-bot-group {
+    margin: 10px 8px 4px; font-size: 10px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--vela-fg-faint);
+}
+.midorii-bot-group:first-child { margin-top: 4px; }
+@media (max-width: 860px) {
+    .midorii-bot-main { flex-direction: column; }
+    .midorii-bot-list { width: auto !important; max-height: 38%; border-bottom: 1px solid var(--vela-border); }
 }
 ${overlayScrollbarCss('.midorii-bot-list')}
 .midorii-bot-item {
@@ -122,17 +133,15 @@ ${overlayScrollbarCss('.midorii-bot-list')}
 .midorii-bot-pane[hidden] { display: none; }
 .midorii-bot-settings { position: absolute; inset: 0; overflow: auto; }
 ${overlayScrollbarCss('.midorii-bot-settings')}
-.midorii-bot-settings-inner { max-width: 900px; margin: 0 auto; padding: 16px 18px 32px; }
+.midorii-bot-settings-inner { max-width: 1080px; margin: 0 auto; padding: 16px 18px 32px; }
 
-/* The live pane: chart on top, then the dock, then the tape. */
-.midorii-bot-live { position: absolute; inset: 0; display: flex; flex-direction: column; }
+/* The live pane: the movable panels. See shell/panelBoard.ts. */
+.midorii-bot-live { position: absolute; inset: 0; display: flex; }
 .midorii-bot-account-rail {
-    flex: none; display: flex; align-items: center; gap: 18px;
-    min-height: 66px; padding: 9px 18px;
-    border-bottom: 1px solid var(--vela-border);
-    background: var(--vela-surface);
+    flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+    padding: 2px 14px 14px;
 }
-.midorii-bot-account-copy { flex: 1 1 auto; min-width: 0; }
+.midorii-bot-account-copy { min-width: 0; }
 .midorii-bot-account-label {
     display: block; color: var(--vela-accent-bright, #2962ff);
     font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase;
@@ -152,22 +161,45 @@ ${overlayScrollbarCss('.midorii-bot-settings')}
 }
 .midorii-bot-account-link:hover { background: var(--vela-hover); }
 .midorii-bot-account-link:focus-visible,
+.midorii-bot-tab[data-attention='1']::after {
+    content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 0 2px 6px; border-radius: 50%;
+    background: var(--vela-warning, #d9822b);
+}
 .midorii-bot-tab:focus-visible { outline: 2px solid var(--vela-accent-bright, #2962ff); outline-offset: 2px; }
-.midorii-bot-chart { flex: 1 1 auto; min-height: 0; position: relative; }
+.midorii-bot-chart { flex: 1 1 auto; min-height: 0; position: relative; border-top: 1px solid var(--vela-border-faint); }
 .midorii-bot-tape {
-    flex: 0 0 auto; height: 220px; min-height: 0;
-    border-top: 1px solid var(--vela-border);
+    flex: 1 1 auto; min-height: 0;
     background: var(--vela-surface);
     display: flex; flex-direction: column; overflow: hidden;
 }
 ${overlayScrollbarCss('.midorii-bot-tape')}
-@media (max-width: 900px) {
-    .midorii-bot-account-rail { align-items: flex-start; flex-direction: column; gap: 7px; }
-    .midorii-bot-account-link { align-self: flex-start; }
+
+/* The trade dock is the replay's, built for a full-width strip under a chart that has a seam
+   to drag and a fold button. In a panel the panel is the size and the seam, so both go. */
+.midorii-board-panel[data-panel='position'] { max-height: 50%; }
+.midorii-board-panel[data-panel='position'] .midorii-board-panel-body { overflow: hidden; }
+.midorii-board-panel[data-panel='position'] .midorii-dock { flex: 1 1 auto; min-height: 0; border-top: 0; }
+.midorii-board-panel[data-panel='position'] .midorii-dock-resizer,
+.midorii-board-panel[data-panel='position'] .midorii-dock-fold { display: none; }
+.midorii-board-panel[data-panel='position'] .midorii-dock-body { height: auto !important; flex: 1 1 auto; min-height: 0; overflow: auto; }
+.midorii-board-panel[data-panel='position'] .midorii-dock-head { flex-wrap: wrap; height: auto; min-height: 34px; padding-block: 4px; }
+.midorii-bot-position { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+.midorii-bot-status { padding: 2px 14px 14px; }
+.midorii-bot-status .midorii-bot-figs { flex-wrap: wrap; row-gap: 10px; }
+.midorii-bot-status-note { margin: 0; color: var(--vela-fg-muted); font-size: 12px; line-height: 1.55; }
+
+.midorii-bot-rules { padding: 0 14px 14px; }
+.midorii-bot-rules-now { margin: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--vela-fg-muted); }
+.midorii-bot-rules-now[data-blocked='1'] {
+    padding: 7px 9px; border-left: 2px solid var(--vela-warning, #d9822b);
+    background: var(--vela-surface-overlay); color: var(--vela-fg);
 }
-@media (max-height: 700px) {
-    .midorii-bot-tape { height: 170px; }
-}
+.midorii-bot-rule { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 12px;
+    border-bottom: 1px solid var(--vela-border-faint); }
+.midorii-bot-rule span { color: var(--vela-fg-muted); }
+.midorii-bot-rule b { font-weight: 600; color: var(--vela-fg-bright); text-align: right; font-variant-numeric: tabular-nums; }
+.midorii-bot-rule[data-on='0'] b { color: var(--vela-fg-faint); font-weight: 500; }
 
 .midorii-bot-empty { padding: 28px 20px; color: var(--vela-fg-muted); line-height: 1.65; max-width: 620px; }
 .midorii-bot-empty h2 { margin: 0 0 8px; font-size: 15px; color: var(--vela-fg-bright); }
@@ -267,6 +299,14 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     let formReadOnly = false;
     let formAccountTrades = 0;
     let formCapitalConfigured = false;
+    /** The setup step to scroll to once the form is on screen — set by "Finish setup". */
+    let pendingSection: SetupSection | null = null;
+
+    /** What keeps this bot from starting. The form's draft when it is the one being edited,
+     *  because that is what Start would save and run. */
+    function problemOf(bot: BotConfig): SetupProblem | null {
+        return formFor === bot.id && form ? form.problem : setupProblem(bot);
+    }
 
     function maySwitchBot(nextId?: string): boolean {
         if (formFor === selected && form?.dirty && nextId !== selected) {
@@ -308,6 +348,12 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     livePane.className = 'midorii-bot-pane';
     const liveStack = doc.createElement('div');
     liveStack.className = 'midorii-bot-live';
+    const statusHost = doc.createElement('div');
+    statusHost.className = 'midorii-bot-status';
+    const rulesHost = doc.createElement('div');
+    rulesHost.className = 'midorii-bot-rules';
+    const positionHost = doc.createElement('div');
+    positionHost.className = 'midorii-bot-position';
     const accountRail = doc.createElement('div');
     accountRail.className = 'midorii-bot-account-rail';
     const accountCopy = doc.createElement('div');
@@ -324,7 +370,22 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     chartHost.className = 'midorii-bot-chart';
     const tapeHost = doc.createElement('div');
     tapeHost.className = 'midorii-bot-tape';
-    liveStack.append(accountRail, chartHost, tapeHost);
+
+    /* Where the panels sit is remembered per machine, not per bot: it is how this person likes
+     * the screen, and it should not change under them when they pick another bot. Storage can
+     * be unavailable (a locked-down profile); the store copes with that. */
+    let storage: Storage | null = null;
+    try { storage = doc.defaultView?.localStorage ?? null; } catch { storage = null; }
+    const layoutStore: LayoutStore<PanelId> = createLayoutStore(BOT_BOARD, storage);
+    const board = mountPanelBoard(doc, layoutStore, {
+        status: { title: 'Status', body: statusHost },
+        account: { title: 'Account', body: accountRail },
+        chart: { title: 'Chart', body: chartHost, stackedHeight: 320 },
+        activity: { title: 'Activity', body: tapeHost },
+        position: { title: 'Open position', body: positionHost },
+        rules: { title: 'Safety rules', body: rulesHost },
+    });
+    liveStack.appendChild(board.el);
     livePane.appendChild(liveStack);
 
     const settingsPane = doc.createElement('div');
@@ -337,7 +398,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     settingsPane.appendChild(settingsScroll);
 
     body.append(head, livePane, settingsPane);
-    main.append(list, body);
+    main.append(list, mountFleetGutter(doc, layoutStore, list), body);
     root.append(bar, main);
     host.appendChild(root);
 
@@ -399,7 +460,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
             });
         }
 
-        dock = mountTradeDock(liveStack, {
+        dock = mountTradeDock(positionHost, {
             /* A person can always close what a bot opened. Nothing here can OPEN anything —
              * see the file header on why this screen has no ticket. */
             closePosition: (id) => act((c) => c.closeOne(id)),
@@ -418,8 +479,6 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
             // No way in from this screen, so no instructions for one. See the file header.
             howToTrade: 'The bot opens its own trades — these buttons can only close them.',
         });
-        // The dock mounts at the end of the column; the tape belongs under it.
-        liveStack.appendChild(tapeHost);
 
         ensureUIHost(chartHost, resolveTheme(opts.theme()));
         return ws;
@@ -502,14 +561,34 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         what: HTMLElement;
     }>();
 
+    /* Headings only while something is running: with nothing running, "Not running" over the
+     * whole list would be a label for the obvious. */
+    const runningHead = doc.createElement('div');
+    runningHead.className = 'midorii-bot-group';
+    runningHead.textContent = 'Running';
+    const idleHead = doc.createElement('div');
+    idleHead.className = 'midorii-bot-group';
+    idleHead.textContent = 'Not running';
+
     function paintList(): void {
-        const bots = engine.list();
+        const all = engine.list();
         for (const [id, row] of listItems) {
-            if (bots.some(bot => bot.id === id)) continue;
+            if (all.some(bot => bot.id === id)) continue;
             row.item.remove();
             listItems.delete(id);
         }
+        const isRunning = (id: string): boolean => {
+            const state = engine.status(id);
+            return state === 'running' || state === 'starting' || state === 'stopping';
+        };
+        const active = all.filter((bot) => isRunning(bot.id));
+        const idle = all.filter((bot) => !isRunning(bot.id));
+        const grouped = active.length > 0;
+        const bots = [...active, ...idle];
+        const sequence: HTMLElement[] = [];
+        if (grouped) sequence.push(runningHead);
         for (const [index, bot] of bots.entries()) {
+            if (grouped && index === active.length && idle.length > 0) sequence.push(idleHead);
             const status = engine.status(bot.id);
             let entry = listItems.get(bot.id);
             if (!entry) {
@@ -546,8 +625,13 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
             const spec = STRATEGIES[bot.strategy];
             what.textContent = `${spec?.name ?? bot.strategy} · ${bot.symbol || 'no asset'} · `
                 + `${bot.venue === 'capital' ? 'live' : 'paper'}`;
-            // Moving a pressed control also interrupts a native click.
-            if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
+            sequence.push(item);
+        }
+        if (!grouped) runningHead.remove();
+        if (!grouped || idle.length === 0) idleHead.remove();
+        // Moving a pressed control also interrupts a native click, so only what is out of place moves.
+        for (const [position, node] of sequence.entries()) {
+            if (list.children[position] !== node) list.insertBefore(node, list.children[position] ?? null);
         }
     }
 
@@ -570,6 +654,9 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     title.append(headName, sub);
     const figs = doc.createElement('span');
     figs.className = 'midorii-bot-figs';
+    const statusNote = doc.createElement('p');
+    statusNote.className = 'midorii-bot-status-note';
+    statusHost.append(figs, statusNote);
     const tabs = doc.createElement('span');
     tabs.className = 'midorii-bot-tabs';
     const paneButtons = new Map<Pane, HTMLButtonElement>();
@@ -584,8 +671,21 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
     const toggle = button('Start', 'primary');
     toggle.onclick = () => {
         const bot = engine.find(selected);
-        if (bot) void toggleBot(bot);
+        if (!bot) return;
+        const stopped = engine.status(bot.id) === 'stopped' || engine.status(bot.id) === 'failed';
+        const problem = stopped ? problemOf(bot) : null;
+        if (problem) {
+            // Nothing to start yet: take the person to the step that is missing something.
+            pendingSection = problem.section;
+            pane = 'settings';
+            paint();
+            return;
+        }
+        void toggleBot(bot);
     };
+
+    const layoutButton = button('Layout');
+    attachLayoutMenu(layoutButton, root, layoutStore);
 
     function paintHead(bot: BotConfig | undefined): void {
         if (!bot) {
@@ -593,7 +693,8 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
             return;
         }
         // Feed updates must preserve the controls between pointer down and pointer up.
-        if (title.parentElement !== head) head.append(title, figs, tabs, toggle);
+        if (title.parentElement !== head) head.append(title, tabs, layoutButton, toggle);
+        layoutButton.hidden = pane !== 'live';
         const runner = engine.displayRunner(bot.id);
         const status = engine.status(bot.id);
         headName.textContent = bot.name;
@@ -621,7 +722,10 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
             sub.dataset.dirty = '1';
         }
         figs.replaceChildren();
-        figs.hidden = !(runner && (runner.paperController || runner.capitalController));
+        const hasAccount = Boolean(runner && (runner.paperController || runner.capitalController));
+        figs.hidden = !hasAccount;
+        statusNote.hidden = hasAccount;
+        statusNote.textContent = 'Start the bot to see its account figures here.';
         if (runner && (runner.paperController || runner.capitalController)) {
             const equity = runner.equity();
             const move = equity - bot.balance;
@@ -640,8 +744,15 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
             else delete b.dataset.active;
         }
         const stopped = status === 'stopped' || status === 'failed';
-        toggle.textContent = stopped
-            ? (formFor === bot.id && form?.dirty ? 'Save & Start' : 'Start') : 'Stop';
+        const problem = stopped ? problemOf(bot) : null;
+        toggle.textContent = !stopped
+            ? 'Stop'
+            : problem ? 'Finish setup' : (formFor === bot.id && form?.dirty ? 'Save & Start' : 'Start');
+        const settingsTab = paneButtons.get('settings');
+        if (settingsTab) {
+            if (problem || (formFor === bot.id && form?.dirty)) settingsTab.dataset.attention = '1';
+            else delete settingsTab.dataset.attention;
+        }
         toggle.classList.toggle('vela-dialog-btn-primary', stopped);
         toggle.classList.toggle('vela-dialog-btn-danger', !stopped);
         toggle.disabled = status === 'stopping';
@@ -931,6 +1042,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
                     pickAsset: () => assets.choose(),
                     onSave: saveBot,
                     onDirtyChange: () => schedulePaint(),
+                    onDraftChange: () => schedulePaint(),
                     onDelete: () => {
                         const current = engine.find(bot.id);
                         if (current) void deleteBot(current);
@@ -953,7 +1065,45 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
                 formCapitalConfigured = capitalConfigured;
                 form.reset(bot, running, accountTrades, capitalConfigured);
             }
+            if (pendingSection) {
+                form.jumpTo(pendingSection);
+                pendingSection = null;
+            }
         }
+    }
+
+    /** The safety rules panel: what the bot is set to, and whether any of it is in the way now. */
+    let rulesDrawn = '';
+    function paintRules(bot: BotConfig, runner: BotRunner | null): void {
+        const running = engine.status(bot.id) === 'running';
+        const refusal = running ? runner?.refusal() ?? null : null;
+        const sentence = refusal
+            ? `Not trading right now: ${refusal}`
+            : running
+                ? 'No rule is blocking a trade right now.'
+                : 'These apply while the bot runs. Change them under Settings → Safety rules.';
+        const rows = ruleRows(bot.guards);
+        // The panel is repainted with every tick; rebuilding identical rows would only cost frames.
+        const key = JSON.stringify([bot.id, sentence, rows]);
+        if (key === rulesDrawn) return;
+        rulesDrawn = key;
+
+        const now = doc.createElement('p');
+        now.className = 'midorii-bot-rules-now';
+        if (refusal) now.dataset.blocked = '1';
+        now.textContent = sentence;
+        const lines = rows.map((r) => {
+            const row = doc.createElement('div');
+            row.className = 'midorii-bot-rule';
+            row.dataset.on = r.on ? '1' : '0';
+            const label = doc.createElement('span');
+            label.textContent = r.label;
+            const value = doc.createElement('b');
+            value.textContent = r.value;
+            row.append(label, value);
+            return row;
+        });
+        rulesHost.replaceChildren(now, ...lines);
     }
 
     /** The live half: the account card, the dock and the tape, including the retained readout
@@ -969,6 +1119,7 @@ export function mountBotView(host: HTMLElement, opts: BotViewOptions): BotViewHa
         accountLink.textContent = bot.venue === 'paper'
             ? `View bot trades · ${tradeCount}` : 'View bot activity';
         tape.render(runner, bot);
+        paintRules(bot, runner);
         if (!runner) {
             /* The card is left alone rather than hidden. It owns its own visibility — a
              * person can put it away with its corner button and the Settings tab can switch

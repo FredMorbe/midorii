@@ -6,6 +6,7 @@ import type { VelaTheme } from '../../../src/core/options';
 import { openChangelog } from '../about/changelogDialog';
 import { button } from '../runs/runViews';
 import { STYLES, STYLE_OPTIONS, type AppStyle, type AppThemeName } from '../shell/themes';
+import { screenHead } from '../shell/screenHead';
 import { DEFAULT_PAPER_SETTINGS, needsFreshAccount, type PaperSettings } from '../trading/paperSettings';
 import {
     NO_ACCOUNT_RISK, capitalAccountKey, loadAccountRisk, saveAccountRisk, type AccountRisk,
@@ -68,16 +69,6 @@ const CSS = `
     background: var(--vela-bg);
     color: var(--vela-fg);
     font: 13px/1.5 var(--vela-font, sans-serif);
-}
-.midorii-settings-bar {
-    flex: none;
-    display: flex; align-items: center; gap: 10px;
-    height: 38px; padding: 0 14px;
-    border-bottom: 1px solid var(--vela-border-faint);
-    background: var(--vela-chrome);
-    font-family: var(--vela-font-mono);
-    font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--vela-fg-muted);
 }
 .midorii-settings-main { flex: 1 1 auto; min-height: 0; display: flex; }
 
@@ -211,11 +202,7 @@ export function mountSettingsView(host: HTMLElement, opts: SettingsViewOptions):
     const root = doc.createElement('div');
     root.className = 'midorii-settings';
 
-    const bar = doc.createElement('div');
-    bar.className = 'midorii-settings-bar';
-    const barLabel = doc.createElement('span');
-    barLabel.textContent = 'Settings';
-    bar.appendChild(barLabel);
+    const screenTop = screenHead(doc, { title: 'Settings' });
 
     const main = doc.createElement('div');
     main.className = 'midorii-settings-main';
@@ -228,7 +215,7 @@ export function mountSettingsView(host: HTMLElement, opts: SettingsViewOptions):
     body.appendChild(inner);
     main.append(rail, body);
 
-    root.append(bar, main);
+    root.append(screenTop.el, main);
     host.appendChild(root);
 
     const paneButtons = new Map<SettingsPane, HTMLButtonElement>();

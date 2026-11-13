@@ -4,6 +4,7 @@ import type { Costs } from '../../../shared/engine/broker';
 import type { MidoriDatasetMeta } from '../midori';
 import { formatDay, formatPercent } from '../format';
 import { button, cell, ensureFigureStyles, headerRow, tile, tileGrid } from '../runs/runViews';
+import { screenHead } from '../shell/screenHead';
 import { startPatternSearch, type PatternSearchHandle } from './patternClient';
 import type { MineProgress, MineResult, PatternCandidate } from './miner';
 import type { PatternStats } from './stats';
@@ -287,12 +288,16 @@ export function mountPatternsView(host: HTMLElement): PatternsViewHandle {
     /* ── frame ─────────────────────────────────────────────────────────── */
     const root = doc.createElement('div');
     root.className = 'midorii-patterns';
+    const screenTop = screenHead(doc, {
+        title: 'Patterns',
+        sub: 'Search a market’s history for candlestick patterns that pay, and see which survive being asked twice.',
+    });
     const body = doc.createElement('div');
     body.className = 'midorii-patterns-body';
     const inner = doc.createElement('div');
     inner.className = 'midorii-patterns-inner';
     body.appendChild(inner);
-    root.appendChild(body);
+    root.append(screenTop.el, body);
     host.appendChild(root);
 
     const formCard = doc.createElement('div');

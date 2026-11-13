@@ -15,6 +15,7 @@ import { button, ensureFigureStyles, equityCurveSvg, sectionLabel, settingsGrid,
 import { startSweep, type SweepHandle } from './sweepClient';
 import { mountSearchView } from './searchView';
 import type { SweepRun } from './sweepRunner';
+import { screenHead } from '../shell/screenHead';
 import { ensureSweepStyles, overfitNote, sweepTable } from './sweepViews';
 import { groupBacktestParams } from './formLayout';
 import { strategySettingsSnapshot, storedStrategySettings, type StrategySettingsSnapshot } from '../strategies/settingsTransfer';
@@ -82,39 +83,6 @@ const CSS = `
     color: var(--vela-fg);
     font: 13px/1.5 var(--vela-font, sans-serif);
 }
-.midorii-backtest-bar {
-    flex: none;
-    display: flex; align-items: center; gap: 10px;
-    height: 44px; padding: 0 20px;
-    border-bottom: 1px solid var(--vela-border);
-    background: var(--vela-chrome);
-    font-size: 11px; color: var(--vela-fg-muted);
-}
-.midorii-backtest-bar > span:first-child {
-    font-family: var(--vela-font-mono);
-    font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase;
-    opacity: 0.8;
-}
-.midorii-backtest-spacer { flex: 1 1 auto; }
-.midorii-backtest-seg {
-    display: inline-flex; align-items: center; gap: 2px;
-    padding: 3px;
-    border: 1px solid var(--vela-border-faint);
-    border-radius: var(--vela-radius-md);
-    background: var(--vela-surface-sunken);
-}
-.midorii-backtest-tab {
-    all: unset;
-    padding: 4px 12px; border-radius: var(--vela-radius-sm);
-    font-size: 12px; font-weight: 600; color: var(--vela-fg-muted); cursor: pointer;
-    transition: background var(--vela-dur-fast) ease, color var(--vela-dur-fast) ease, box-shadow var(--vela-dur-fast) ease;
-}
-.midorii-backtest-tab:hover { background: var(--vela-hover); color: var(--vela-fg-bright); }
-.midorii-backtest-tab[data-active='1'] {
-    background: var(--vela-surface-card); color: var(--vela-fg-bright);
-    box-shadow: 0 1px 4px color-mix(in srgb, var(--vela-bg) 65%, transparent);
-}
-
 .midorii-backtest-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
 ${overlayScrollbarCss('.midorii-backtest-body')}
 .midorii-backtest-inner { max-width: 960px; margin: 0 auto; padding: 24px 20px 48px; }
@@ -398,7 +366,6 @@ ${overlayScrollbarCss('.midorii-backtest-body')}
     .midorii-backtest-market-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
-    .midorii-backtest-bar { height: 42px; padding-inline: 12px; }
     .midorii-backtest-inner { padding: 14px 12px 32px; }
     .midorii-backtest-card { border-radius: var(--vela-radius-lg); margin-bottom: 14px; }
     .midorii-backtest-head { padding: 15px 14px 13px; }
@@ -420,8 +387,6 @@ ${overlayScrollbarCss('.midorii-backtest-body')}
     .midorii-backtest-pagination-nav .vela-dialog-btn { flex: 1 1 auto; }
 }
 @media (max-width: 430px) {
-    .midorii-backtest-bar > span:first-child { display: none; }
-    .midorii-backtest-seg { margin-inline: auto; }
     .midorii-backtest-range { grid-template-columns: minmax(0, 1fr); }
 }
 `;
@@ -520,15 +485,12 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
     const root = doc.createElement('div');
     root.className = 'midorii-backtest midorii-figures';
 
-    const bar = doc.createElement('div');
-    bar.className = 'midorii-backtest-bar';
-    const barLabel = doc.createElement('span');
-    barLabel.textContent = 'Backtest';
-    const seg = doc.createElement('div');
-    seg.className = 'midorii-backtest-seg';
-    const spacer = doc.createElement('div');
-    spacer.className = 'midorii-backtest-spacer';
-    bar.append(barLabel, seg, spacer);
+    const head = screenHead(doc, {
+        title: 'Backtest',
+        sub: 'Run a strategy over stored history, or sweep a range of its settings.',
+        tabs: [{ id: 'single', label: 'Single run' }, { id: 'sweep', label: 'Sweep' }, { id: 'jobs', label: 'Search jobs' }],
+        onTab: (id) => pickMode(id as 'single' | 'sweep' | 'jobs'),
+    });
 
     const body = doc.createElement('div');
     body.className = 'midorii-backtest-body';
@@ -536,7 +498,7 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
     inner.className = 'midorii-backtest-inner';
     body.appendChild(inner);
 
-    root.append(bar, body);
+    root.append(head.el, body);
     host.appendChild(root);
 
     let catalog = strategyCatalog();
@@ -2223,11 +2185,8 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
         const background = getComputedStyle(root).getPropertyValue('--vela-bg').trim();
         root.style.colorScheme = isDarkColor(background) ? 'dark' : 'light';
 
-        for (const [id, b] of modeButtons) {
-            if (id === mode) b.dataset.active = '1';
-            else delete b.dataset.active;
-            b.disabled = running;
-        }
+        head.setActive(mode);
+        head.setTabsDisabled(running);
 
         inner.replaceChildren();
 
@@ -2263,25 +2222,17 @@ export function mountBacktestView(host: HTMLElement, options: BacktestViewOption
         }
     }
 
-    const modeButtons = new Map<'single' | 'sweep' | 'jobs', HTMLButtonElement>();
-    for (const [id, label] of [['single', 'Single run'], ['sweep', 'Sweep'], ['jobs', 'Search jobs']] as const) {
-        const b = doc.createElement('button');
-        b.className = 'midorii-backtest-tab';
-        b.textContent = label;
-        b.onclick = () => {
-            if (running) return;
-            mode = id;
-            inner.hidden = id === 'jobs';
-            if (id === 'jobs') {
-                void searchView.show({ strategy: strategyId, base: { ...paramsFor(strategyId) }, symbol: market(), timeframe,
-                    from, to, axes: { ...rangesFor(strategyId) }, balance, costs: costsOn, pointValue,
-                    sizeStep: sizeStep > 0 ? sizeStep : null, minSize: minSize > 0 ? minSize : null, intrabar });
-            } else searchView.hide();
-            status = null;
-            paint();
-        };
-        modeButtons.set(id, b);
-        seg.appendChild(b);
+    function pickMode(id: 'single' | 'sweep' | 'jobs'): void {
+        if (running) return;
+        mode = id;
+        inner.hidden = id === 'jobs';
+        if (id === 'jobs') {
+            void searchView.show({ strategy: strategyId, base: { ...paramsFor(strategyId) }, symbol: market(), timeframe,
+                from, to, axes: { ...rangesFor(strategyId) }, balance, costs: costsOn, pointValue,
+                sizeStep: sizeStep > 0 ? sizeStep : null, minSize: minSize > 0 ? minSize : null, intrabar });
+        } else searchView.hide();
+        status = null;
+        paint();
     }
 
     paint();

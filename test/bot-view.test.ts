@@ -19,6 +19,14 @@ vi.mock('../app/renderer/runs/runViews', () => ({
 vi.mock('../app/renderer/replay/replayIndicator', () => ({ TRADE_INDICATOR_TYPE: 'test-trades', registerTradeIndicator: () => {} }));
 vi.mock('../app/renderer/bot/botTape', () => ({ botTape: () => ({ render() {}, showPrimary() {} }) }));
 vi.mock('../app/renderer/bot/assetPicker', () => ({ createAssetPicker: () => ({}) }));
+// The panel board is DOM and layout work this file's minimal document cannot host; its own
+// behaviour is covered by the layout tests and in the running app.
+vi.mock('../app/renderer/shell/panelBoard', () => ({
+    createLayoutStore: () => ({ get: () => ({ fleet: 272, columns: [] }), set() {}, reset() {}, subscribe() {} }),
+    mountPanelBoard: (doc: any) => ({ el: doc.createElement('div') }),
+    mountFleetGutter: (doc: any) => doc.createElement('div'),
+    attachLayoutMenu: () => {},
+}));
 
 import { mountBotView } from '../app/renderer/bot/botView';
 import { newBot } from '../app/renderer/bot/botTypes';
@@ -92,6 +100,8 @@ function setup() {
 
 afterEach(() => vi.unstubAllGlobals());
 
+const select = (row: any): void => row.onclick();
+
 describe('bot view controls during feed updates', () => {
     it('keeps the bot selector and Stop button attached across repeated refreshes', async () => {
         const { find, view, bots, stop } = setup();
@@ -114,5 +124,18 @@ describe('bot view controls during feed updates', () => {
         expect(head.children.at(-1) === toggle).toBe(true);
         expect(toggle.textContent).toBe('Start');
         expect(find('midorii-bot-dot')[1].dataset.state).toBe('stopped');
+    });
+
+    it('groups the list under Running and Not running only while a bot is running', async () => {
+        const { find, view, stop } = setup();
+        (window as any).midori.capital.environment = async () => ({ configured: false });
+        await view.refresh();
+        expect(find('midorii-bot-group').map((el) => el.textContent)).toEqual(['Running']);
+        select(find('midorii-bot-item')[0]);
+        find('midorii-bot-head')[0].children.at(-1).onclick();
+        await Promise.resolve();
+        expect(stop).toHaveBeenCalled();
+        await view.refresh();
+        expect(find('midorii-bot-group')).toHaveLength(0);
     });
 });
