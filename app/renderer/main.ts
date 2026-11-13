@@ -41,6 +41,7 @@ import { installTradeMenu } from './trading/tradeMode';
 import { installAlerts } from './alerts/installAlerts';
 import { installQuotes } from './quotes/installQuotes';
 import { symbolProvider, symbolTicker } from './alerts/alertTypes';
+import { installSymbolOrder } from './watchlist/installSymbolOrder';
 import { installWatchlist } from './watchlist/installWatchlist';
 import { wireOverlaySettings } from './replay/overlaySettings';
 
@@ -361,6 +362,9 @@ installQuotes(workspace);
  * tied to a session, so the list does not drive those. */
 const watchlist = installWatchlist(workspace, providers(), (ctx) => !isReplayContext(ctx) && !isBotContext(ctx));
 (window as unknown as { __watchlist: typeof watchlist }).__watchlist = watchlist;
+
+/* The symbol search opens on the markets that are on a watchlist, then the ones last opened. */
+installSymbolOrder(workspace, watchlist.store);
 
 /* The command palette (Ctrl+K): every tab, the theme, the symbol search and the watchlist's
  * markets in one filter, and Ctrl+1..8 straight to a tab. What it lists is read as it opens. */

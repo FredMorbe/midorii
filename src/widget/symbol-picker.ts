@@ -7,7 +7,7 @@ import { Menu, type MenuItemDescriptor } from '../ui/components/menu';
 import { injectStyles } from '../ui/styles';
 import { iconEl } from '../ui/icons';
 import { tickerIconEl, baseOf } from './symbol-icon';
-import { symbolRanking } from './contributions';
+import { symbolRanking, type SymbolRankingHook } from './contributions';
 import { isGroupRow, groupKeyOf, groupMembers, defaultMemberOf } from '../data/symbol-groups';
 
 /** First occurrence wins, keyed by venue+ticker — a ranking hook may inject an entry
@@ -313,7 +313,7 @@ export class SymbolPicker {
     /** Group rows currently expanded (venue-scoped keys) — members shown inline. */
     private readonly expanded = new Set<string>();
     /** The ranked pool cache — `key` fingerprints the raw pool the ranking ran on. */
-    private ranked: { key: string; result: SymbolDescriptor[] } | null = null;
+    private ranked: { hook: SymbolRankingHook; key: string; result: SymbolDescriptor[] } | null = null;
     private ranking = false;
     private remote: SymbolDescriptor[] = [];
     private searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -596,16 +596,17 @@ export class SymbolPicker {
         const hook = symbolRanking();
         if (!hook) return raw;
         const key = `${raw.length}:${raw[0]?.ticker ?? ''}:${raw[raw.length - 1]?.ticker ?? ''}`;
-        if (this.ranked?.key !== key && !this.ranking) {
+        // A re-registered ranking is a new hook: it re-ranks a pool that has not changed.
+        if ((this.ranked?.key !== key || this.ranked.hook !== hook) && !this.ranking) {
             this.ranking = true;
             Promise.resolve([...raw])
                 .then((copy) => hook(copy))
                 .then((out) => {
-                    this.ranked = { key, result: dedupeSymbols(out) };
+                    this.ranked = { hook, key, result: dedupeSymbols(out) };
                 })
                 .catch((err) => {
                     console.warn('[vela] symbol ranking failed — pool order kept:', err);
-                    this.ranked = { key, result: [...raw] };
+                    this.ranked = { hook, key, result: [...raw] };
                 })
                 .finally(() => {
                     this.ranking = false;

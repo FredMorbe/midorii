@@ -396,7 +396,9 @@ The contract:
   venues) is the point.
 - **Called when the pool changes** (a provider's index lands or refreshes), never per
   keystroke — the picker caches the result. Async results land on the next repaint
-  (stale-while-revalidate in between).
+  (stale-while-revalidate in between). To re-rank for a reason the pool does not show
+  (favorites changed, say), register a fresh hook: the picker treats a new hook as a
+  reason to rank the unchanged pool again.
 - **Empty query = the head of your list.** The built-in "majors first" pin stands down
   while a ranking is registered. Under a typed query, the relevance tiers still lead
   (prefix > substring > description > venue) — your order breaks ties within each

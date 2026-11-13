@@ -152,6 +152,10 @@ Vela's — the charting library Midorii is built on and forked from.
   put one of your Watchlist markets on the chart. Type a few letters, move with the arrow keys
   and press Enter. Ctrl+1 to Ctrl+8 (⌘ on a Mac) go straight to Chart, Replay, Backtest,
   Patterns, Analysis, Strategies, Trading Bot and Settings.
+- **The market search opens on your favorites and your recent markets.** Every market on one of
+  your Watchlists now comes first in the search, marked with a star, followed by the markets you
+  opened last, marked with an arrow. Both stay at the top while you type, so your own markets
+  win over look-alikes.
 
 ### Changed
 
