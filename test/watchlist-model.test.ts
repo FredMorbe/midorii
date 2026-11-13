@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    activeList, addSection, addSymbol, changeOf, createList, deleteList, emptyState, hasSymbol,
+    activeList, addSection, addSymbol, changeOf, createList, decimalsOf, deleteList, emptyState, hasSymbol,
     moveItem, normalizeState, removeItem, renameList, selectList,
 } from '../app/renderer/watchlist/watchlistModel';
 
@@ -94,5 +94,18 @@ describe('watchlist model', () => {
         expect(changeOf(null, 100)).toBeNull();
         expect(changeOf(100, null)).toBeNull();
         expect(changeOf(100, 0)).toBeNull();
+    });
+});
+
+describe('decimalsOf', () => {
+    it('counts the decimals a price is written with', () => {
+        expect(decimalsOf(1964.35)).toBe(2);
+        expect(decimalsOf(1964)).toBe(0);
+        expect(decimalsOf(0.06473)).toBe(5);
+    });
+    it('clears floating-point dust and caps at eight decimals', () => {
+        expect(decimalsOf(0.1 + 0.2)).toBe(1);
+        expect(decimalsOf(1.123456789123)).toBe(8);
+        expect(decimalsOf(Number.NaN)).toBe(0);
     });
 });

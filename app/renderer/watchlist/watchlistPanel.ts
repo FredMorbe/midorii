@@ -1,10 +1,11 @@
 import { registerSidePanel, type SidePanelHandle, type WidgetContext } from '../../../src/plugin';
 import type { Vela } from '../../../src';
 import { Dialog, Menu, buildFieldControl, injectStyles, iconEl, type MenuItemDescriptor } from '../../../src/ui';
-import { formatPercent, formatPrice } from '../format';
+import { formatPercent } from '../format';
 import { symbolProvider, symbolTicker } from '../alerts/alertTypes';
+import { tickSizeOf } from '../alerts/symbolTick';
 import type { PriceSnapshot, QuoteHub } from './quoteHub';
-import { changeOf, NAME_MAX_LENGTH, type WatchItem } from './watchlistModel';
+import { changeOf, decimalsOf, NAME_MAX_LENGTH, type WatchItem } from './watchlistModel';
 import type { WatchlistStore } from './watchlistStore';
 
 /**
@@ -195,6 +196,8 @@ interface RowView {
     row: HTMLElement;
     price: HTMLElement;
     chg: HTMLElement;
+    /** The most decimals this row has shown: a price keeps its width instead of dropping a trailing zero. */
+    decimals: number;
 }
 
 export function registerWatchlistPanel(opts: WatchlistPanelOptions): () => void {
@@ -263,7 +266,11 @@ export function registerWatchlistPanel(opts: WatchlistPanelOptions): () => void 
                 const view = views.get(symbol);
                 if (!view) return;
                 const snap = snapshots.get(symbol);
-                setText(view.price, snap?.price != null ? formatPrice(snap.price) : '—');
+                if (snap?.price != null) {
+                    const tick = tickSizeOf(symbol);
+                    view.decimals = Math.max(view.decimals, tick ? decimalsOf(tick) : 0, decimalsOf(snap.price));
+                }
+                setText(view.price, snap?.price != null ? snap.price.toFixed(view.decimals) : '—');
                 const change = snap ? changeOf(snap.price, snap.reference) : null;
                 setText(view.chg, formatPercent(change, 2, true));
                 setData(view.chg, 'tone', change == null ? undefined : change > 0 ? 'up' : change < 0 ? 'down' : 'flat');
@@ -378,7 +385,7 @@ export function registerWatchlistPanel(opts: WatchlistPanelOptions): () => void 
                     el.append(sym, price, chg, removeButton('Remove from list', () => store.remove(index)));
                     el.addEventListener('click', () => select(item.symbol));
                     dropTarget(el, index);
-                    views.set(item.symbol, { row: el, price, chg });
+                    views.set(item.symbol, { row: el, price, chg, decimals: 0 });
                     nodes.push(el);
                 });
                 list.replaceChildren(...nodes);

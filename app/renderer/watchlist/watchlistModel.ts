@@ -150,3 +150,11 @@ export function changeOf(price: number | null, reference: number | null): number
     if (price == null || reference == null || !(reference > 0)) return null;
     return (price - reference) / reference;
 }
+
+/** How many decimals a number is written with (`1964.35` is 2), up to the eight a price carries. */
+export function decimalsOf(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    const text = String(Number(value.toFixed(8)));
+    const at = text.indexOf('.');
+    return at < 0 ? 0 : text.length - at - 1;
+}
