@@ -41,6 +41,7 @@ import { installTradeMenu } from './trading/tradeMode';
 import { installAlerts } from './alerts/installAlerts';
 import { installQuotes } from './quotes/installQuotes';
 import { symbolProvider, symbolTicker } from './alerts/alertTypes';
+import { installLayouts } from './layouts/installLayouts';
 import { installSymbolOrder } from './watchlist/installSymbolOrder';
 import { installWatchlist } from './watchlist/installWatchlist';
 import { wireOverlaySettings } from './replay/overlaySettings';
@@ -306,6 +307,7 @@ async function selectTab(tab: AppTab): Promise<void> {
 // in the middle of one.
 
 registerIcon('midorii-download', '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M2.5 13.5h11"/></svg>');
+registerIcon('midorii-layouts', '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>');
 registerIcon('midorii-runs', '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M4.5 10.5 7 8l2 1.5 2.5-3.5"/></svg>');
 registerIcon('midorii-replay', '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2"/><path d="M13.5 2v3h-3"/></svg>');
 
@@ -366,6 +368,10 @@ const watchlist = installWatchlist(workspace, providers(), (ctx) => !isReplayCon
 /* The symbol search opens on the markets that are on a watchlist, then the ones last opened. */
 installSymbolOrder(workspace, watchlist.store);
 
+/* Named layouts of the Chart tab — the grid, the markets, the indicators and the drawings,
+ * saved under a name and loaded again from the top bar or the command palette. */
+const layouts = installLayouts(workspace, (ctx) => !isReplayContext(ctx) && !isBotContext(ctx));
+
 /* The command palette (Ctrl+K): every tab, the theme, the symbol search and the watchlist's
  * markets in one filter, and Ctrl+1..8 straight to a tab. What it lists is read as it opens. */
 const PALETTE_TABS: ReadonlyArray<{ id: AppTab; title: string }> = [
@@ -405,6 +411,22 @@ mountCommandPalette({
                 keywords: 'symbol search ticker',
                 run: () => void workspace.pickSymbol().then((symbol) => { if (symbol) workspace.active.setSymbol(symbol); }),
             });
+            list.push({
+                id: 'layout.save',
+                title: 'Save layout…',
+                group: 'Layouts',
+                keywords: 'layout save grid',
+                run: () => void layouts.saveAs(workspace.root),
+            });
+            for (const layout of layouts.store.layouts) {
+                list.push({
+                    id: `layout.${layout.id}`,
+                    title: `Load layout: ${layout.name}`,
+                    group: 'Layouts',
+                    keywords: 'layout open',
+                    run: () => layouts.load(layout.id),
+                });
+            }
             for (const item of watchlist.store.active.items) {
                 if (item.kind !== 'symbol') continue;
                 list.push({

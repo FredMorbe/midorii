@@ -191,7 +191,7 @@ function strip(doc: WorkspaceState): WorkspaceState {
 /** A grid document without the app's own indicators on any slot — what is written to disk.
  *  The controllers add those again on boot; restored from a document they would be a second
  *  copy of lines with nothing behind them. */
-function withoutApp(doc: WorkspaceState): WorkspaceState {
+export function withoutApp(doc: WorkspaceState): WorkspaceState {
     return {
         ...doc,
         charts: doc.charts.map((cell) => {
@@ -251,7 +251,7 @@ function dressGrid(grid: WorkspaceState, shared: WorkspaceState, fallback: Chart
 }
 
 /** The app's own indicators a chart entry is carrying, as the ledger spells them. */
-function appEntries(cell: ChartState | undefined): PersistedNativeEntry[] {
+export function appEntries(cell: ChartState | undefined): PersistedNativeEntry[] {
     return cell?.indicators?.natives.filter((entry) => APP_INDICATORS.includes(nativeType(entry))) ?? [];
 }
 

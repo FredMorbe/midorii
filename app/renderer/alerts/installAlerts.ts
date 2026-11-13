@@ -4,6 +4,10 @@ import type { VelaWorkspace } from '../../../src/workspace';
 import { forEachCell } from '../shell/eachCell';
 import { AlertDialog } from './AlertDialog';
 import { AlertEngine } from './AlertEngine';
+import { IndicatorAlertDialog } from './IndicatorAlertDialog';
+import { IndicatorAlertEngine } from './IndicatorAlertEngine';
+import { IndicatorAlertStore } from './IndicatorAlertStore';
+import { describeAlert } from './indicatorAlertModel';
 import { playAlertSound } from './alertSound';
 import { AlertStore } from './AlertStore';
 import { ALERT_INDICATOR_TYPE, alertIndicatorInputs, readAlertLineId, registerAlertIndicator } from './alertIndicator';
@@ -39,7 +43,10 @@ export function installAlerts(workspace: VelaWorkspace, providers: Record<string
 
     const store = new AlertStore();
     const dialog = new AlertDialog(workspace.root, store);
-    registerAlertsPanel(store, dialog);
+    const reportError = (err: unknown): void => workspace.toast(err instanceof Error ? err.message : String(err), 'error');
+    const indicatorStore = new IndicatorAlertStore();
+    const indicatorDialog = new IndicatorAlertDialog(workspace.root, indicatorStore, reportError);
+    registerAlertsPanel(store, dialog, { store: indicatorStore, dialog: indicatorDialog, canWatch: hasStream });
 
     const offCursor = installCursorPriceTracking();
     workspace.refreshActions(); // mount the just-registered cursor-price attachment now
@@ -111,6 +118,36 @@ export function installAlerts(workspace: VelaWorkspace, providers: Record<string
             console.error('[midorii] could not show the alert notification', err);
         }
         workspace.toast(`${tickerOf(alert.symbol)} alert: ${body}`, 'info');
+    });
+
+    const notify = (title: string, body: string): void => {
+        playAlertSound();
+        try {
+            const n = new Notification(title, { body });
+            n.onclick = () => window.midori.window.restore();
+        } catch (err) {
+            console.error('[midorii] could not show the alert notification', err);
+        }
+        workspace.toast(`${title}: ${body}`, 'info');
+    };
+    const indicatorEngine = new IndicatorAlertEngine(
+        indicatorStore,
+        providers,
+        (alert, r) => {
+            const shown = r.value == null ? '' : ` (now ${Number(r.value.toFixed(4))})`;
+            notify(`Indicator alert \u2014 ${tickerOf(alert.symbol)}`, alert.message || `${describeAlert(alert)}${shown}`);
+        },
+        (alert, err) => reportError(new Error(`Indicator alert on ${tickerOf(alert.symbol)} cannot be watched: ${err instanceof Error ? err.message : String(err)}`)),
+    );
+    indicatorEngine.start();
+
+    registerWidgetAction({
+        id: 'midorii.add-indicator-alert',
+        target: 'context:body',
+        label: 'Add Indicator Alert\u2026',
+        icon: 'bell',
+        when: (ctx) => hasStream(ctx.symbol),
+        run: (ctx) => indicatorDialog.openNew(ctx.symbol, ctx.timeframe),
     });
 
     registerWidgetAction({

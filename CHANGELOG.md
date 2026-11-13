@@ -156,6 +156,18 @@ Vela's — the charting library Midorii is built on and forked from.
   your Watchlists now comes first in the search, marked with a star, followed by the markets you
   opened last, marked with an arrow. Both stay at the top while you type, so your own markets
   win over look-alikes.
+- **Save your chart setups as named layouts.** The new Layouts button in the chart's top bar
+  saves the whole Chart tab under a name: the grid, every chart's market and timeframe, its
+  indicators and its drawings. Pick a layout from the list to bring it back, or press the trash
+  button beside it to delete it after a confirmation. Saving under a name that already exists
+  updates that layout. Layouts can also be saved and loaded from the command palette. Your
+  favorites and time zone stay as they are when you load one.
+- **Get alerts from indicators.** Right-click a chart and choose Add Indicator Alert, or press the
+  plus under Indicator alerts in the Alerts panel, to be told when an indicator crosses a level
+  (the RSI above 70) or the price (a moving average falling through it). Pick the indicator from
+  the standard studies, adjust its settings, choose the timeframe and whether it should fire
+  once or every time. Indicator alerts are watched in the background on their own market and
+  timeframe, whatever the chart shows, and each one lists in the panel with a switch to pause it.
 
 ### Changed
 
