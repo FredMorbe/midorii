@@ -147,6 +147,11 @@ Vela's — the charting library Midorii is built on and forked from.
   add section headings to group them, and keep several named lists — switch, create, rename and
   delete them from the list name at the top of the panel. Prices are only fetched while the panel
   is open, and your lists are kept between sessions.
+- **Jump anywhere with the command palette.** Press Ctrl+K (⌘K on a Mac) to open a search
+  over everything the app can do: switch to any tab, flip the theme, open the market search or
+  put one of your Watchlist markets on the chart. Type a few letters, move with the arrow keys
+  and press Enter. Ctrl+1 to Ctrl+8 (⌘ on a Mac) go straight to Chart, Replay, Backtest,
+  Patterns, Analysis, Strategies, Trading Bot and Settings.
 
 ### Changed
 

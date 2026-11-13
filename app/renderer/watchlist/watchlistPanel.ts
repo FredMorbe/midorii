@@ -249,25 +249,35 @@ export function registerWatchlistPanel(opts: WatchlistPanelOptions): () => void 
             const report = (err: unknown): void => ctx.toast(err instanceof Error ? err.message : String(err), 'error');
 
             // ── painting ────────────────────────────────────────────────────
+            // A stream repeats the same price and percent many times a second; rewriting an equal
+            // value still invalidates layout, so only a changed value touches the DOM.
+            const setText = (el: HTMLElement, text: string): void => {
+                if (el.textContent !== text) el.textContent = text;
+            };
+            const setData = (el: HTMLElement, key: string, value: string | undefined): void => {
+                if (value === undefined) {
+                    if (key in el.dataset) delete el.dataset[key];
+                } else if (el.dataset[key] !== value) el.dataset[key] = value;
+            };
             const paintRow = (symbol: string): void => {
                 const view = views.get(symbol);
                 if (!view) return;
                 const snap = snapshots.get(symbol);
-                view.price.textContent = snap?.price != null ? formatPrice(snap.price) : '—';
+                setText(view.price, snap?.price != null ? formatPrice(snap.price) : '—');
                 const change = snap ? changeOf(snap.price, snap.reference) : null;
-                view.chg.textContent = formatPercent(change, 2, true);
-                if (change == null) delete view.chg.dataset.tone;
-                else view.chg.dataset.tone = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
+                setText(view.chg, formatPercent(change, 2, true));
+                setData(view.chg, 'tone', change == null ? undefined : change > 0 ? 'up' : change < 0 ? 'down' : 'flat');
                 // An error is shown where the number would be: a quiet dash would read as "no change".
                 if (snap?.error && snap.price == null) {
-                    view.chg.textContent = '!';
-                    view.chg.dataset.error = '1';
-                    view.row.title = snap.error;
+                    setText(view.chg, '!');
+                    setData(view.chg, 'error', '1');
+                    if (view.row.title !== snap.error) view.row.title = snap.error;
                 } else {
-                    delete view.chg.dataset.error;
-                    view.row.title = snap?.error ?? '';
+                    setData(view.chg, 'error', undefined);
+                    const title = snap?.error ?? '';
+                    if (view.row.title !== title) view.row.title = title;
                 }
-                view.row.dataset.live = snap?.live ? '1' : '0';
+                setData(view.row, 'live', snap?.live ? '1' : '0');
             };
             const schedule = (symbol: string): void => {
                 dirty.add(symbol);

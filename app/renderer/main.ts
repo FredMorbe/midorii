@@ -33,12 +33,14 @@ import { loadPrefs, savePrefs, type AppPrefs } from './settings/prefs';
 import { mountSettingsView, type SettingsViewHandle } from './settings/settingsView';
 import { wireRadialMenu } from './settings/radialMenuPrefs';
 import { mountAppTopbar, type AppTab } from './shell/appTopbar';
+import { mountCommandPalette, type PaletteCommand } from './shell/commandPalette';
 import { forEachCell } from './shell/eachCell';
 import { shareChartDoc } from './shell/sharedChartDoc';
 import { paletteOf, type AppStyle, type AppThemeName } from './shell/themes';
 import { installTradeMenu } from './trading/tradeMode';
 import { installAlerts } from './alerts/installAlerts';
 import { installQuotes } from './quotes/installQuotes';
+import { symbolProvider, symbolTicker } from './alerts/alertTypes';
 import { installWatchlist } from './watchlist/installWatchlist';
 import { wireOverlaySettings } from './replay/overlaySettings';
 
@@ -360,6 +362,60 @@ installQuotes(workspace);
 const watchlist = installWatchlist(workspace, providers(), (ctx) => !isReplayContext(ctx) && !isBotContext(ctx));
 (window as unknown as { __watchlist: typeof watchlist }).__watchlist = watchlist;
 
+/* The command palette (Ctrl+K): every tab, the theme, the symbol search and the watchlist's
+ * markets in one filter, and Ctrl+1..8 straight to a tab. What it lists is read as it opens. */
+const PALETTE_TABS: ReadonlyArray<{ id: AppTab; title: string }> = [
+    { id: 'chart', title: 'Chart' },
+    { id: 'replay', title: 'Replay' },
+    { id: 'backtest', title: 'Backtest' },
+    { id: 'patterns', title: 'Patterns' },
+    { id: 'analysis', title: 'Analysis' },
+    { id: 'strategies', title: 'Strategies' },
+    { id: 'bot', title: 'Trading Bot' },
+    { id: 'settings', title: 'Settings' },
+];
+mountCommandPalette({
+    host: document.body,
+    commands: () => {
+        const list: PaletteCommand[] = PALETTE_TABS.map((tab, i) => ({
+            id: `tab.${tab.id}`,
+            title: `Go to ${tab.title}`,
+            group: 'Go to',
+            keywords: tab.title,
+            digit: String(i + 1),
+            run: () => void selectTab(tab.id).catch((err: unknown) => console.error('[midorii] tab switch failed', err)),
+        }));
+        list.push({
+            id: 'theme.toggle',
+            title: currentTheme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme',
+            group: 'App',
+            keywords: 'theme appearance dark light',
+            run: () => applyTheme(currentTheme === 'dark' ? 'light' : 'dark'),
+        });
+        /* Markets only drive the live chart: a replay or a bot chart is tied to a session. */
+        if (currentTab === 'chart') {
+            list.push({
+                id: 'symbol.search',
+                title: 'Change market…',
+                group: 'Chart',
+                keywords: 'symbol search ticker',
+                run: () => void workspace.pickSymbol().then((symbol) => { if (symbol) workspace.active.setSymbol(symbol); }),
+            });
+            for (const item of watchlist.store.active.items) {
+                if (item.kind !== 'symbol') continue;
+                list.push({
+                    id: `market.${item.symbol}`,
+                    title: symbolTicker(item.symbol),
+                    hint: symbolProvider(item.symbol) ?? '',
+                    group: watchlist.store.active.name,
+                    run: () => workspace.active.setSymbol(item.symbol),
+                });
+            }
+        }
+        return list;
+    },
+});
+
 /* Which cards this chart puts on its plot — behind the chart's own gear, with the rest of what
  * a chart looks like. A replay wires its own; this is the one every other account trades on. */
 wireOverlaySettings(workspace);
@@ -393,7 +449,10 @@ function patterns(): PatternsViewHandle {
 }
 
 /** Keep the selected view and the view-specific account strip on the same switch. */
+let currentTab: AppTab = 'chart';
+
 function activateTopbar(tab: AppTab): void {
+    currentTab = tab;
     appTopbar.setActiveTab(tab);
     syncAccountTopbar(tab);
 }
