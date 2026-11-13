@@ -1,6 +1,7 @@
 import { injectStyles, overlayScrollbarCss } from '../../../src/ui';
 import { formatMoney, formatPercent, formatR, formatSignedMoney, formatSize } from '../format';
 import type { OrderRow, PositionRow, TradeBook } from './tradeBook';
+import type { BandAction, BandColumn } from '../trading/accountBand';
 
 /**
  * The dock: what is open, what is waiting, and the things you do to them while a trade is on.
@@ -141,6 +142,10 @@ ${overlayScrollbarCss('.midorii-dock-body')}
 .midorii-dock-btn[data-tone='danger'] { color: var(--vela-danger); }
 /* The account's own line in the header: what it has done since it was opened. Quiet by
    default — it is a readout beside controls, not a headline. */
+.midorii-dock-limits { display: inline-flex; align-items: center; gap: 14px; margin-left: 14px; }
+.midorii-dock-limits .midorii-dock-cell small { display: block; }
+.midorii-dock-cell.up { color: var(--vela-up); }
+.midorii-dock-cell.down { color: var(--vela-down); }
 .midorii-dock-sum {
     display: flex;
     align-items: baseline;
@@ -253,6 +258,14 @@ export interface DockOptions {
      * screen refuses to let them do.
      */
     howToTrade?: string;
+    /**
+     * The account's limits, for an account that keeps any: the room left to each, and the way
+     * to the settings that decide them. Absent ⇒ the dock shows neither.
+     *
+     * The figures are only drawn while at least one limit is set — three dashes in the header
+     * of an account with none would read as readings that failed.
+     */
+    limits?: { columns: readonly BandColumn[]; action: BandAction };
 }
 
 /**
@@ -592,8 +605,18 @@ export function mountTradeDock(host: HTMLElement, actions: DockActions, opts: Do
 
     const summary = doc.createElement('span');
 
+    const limitCells = doc.createElement('span');
+    limitCells.className = 'midorii-dock-limits';
     const spacer = doc.createElement('span');
     spacer.className = 'midorii-dock-spacer';
+
+    // Built once: a button rebuilt on every tick can lose the press that was in the middle of it.
+    const limitsButton = opts.limits ? button(opts.limits.action.label) : null;
+    if (limitsButton && opts.limits) {
+        const { action } = opts.limits;
+        limitsButton.onclick = () => action.run();
+        limitsButton.title = action.title?.() ?? action.label;
+    }
 
     const cancelAll = button('Cancel all orders');
     cancelAll.onclick = () => actions.cancelAll();
@@ -612,7 +635,7 @@ export function mountTradeDock(host: HTMLElement, actions: DockActions, opts: Do
         fold.title = folded ? 'Fold the dock away' : 'Open the dock';
     };
 
-    head.append(title, summary, spacer, cancelAll, flatten, fold);
+    head.append(title, summary, limitCells, spacer, ...(limitsButton ? [limitsButton] : []), cancelAll, flatten, fold);
 
     const body = doc.createElement('div');
     body.className = 'midorii-dock-body';
@@ -633,6 +656,18 @@ export function mountTradeDock(host: HTMLElement, actions: DockActions, opts: Do
             const { positions, orders } = bookState;
             summary.replaceChildren();
             if (account) summary.append(summaryLine(doc, account.stats));
+            if (opts.limits) {
+                const figures = opts.limits.columns.map((c) => ({
+                    caption: typeof c.label === 'function' ? c.label() : c.label,
+                    text: c.value(),
+                    tone: c.tone?.() ?? undefined,
+                    title: c.title,
+                }));
+                limitCells.replaceChildren(...(figures.some((f) => f.text !== '—')
+                    ? figures.map((f) => Object.assign(cell(doc, f.caption, f.text, f.tone), { title: f.title }))
+                    : []));
+                if (limitsButton) limitsButton.title = opts.limits.action.title?.() ?? opts.limits.action.label;
+            }
             title.replaceChildren();
             const counts = doc.createElement('span');
             counts.innerHTML = '';

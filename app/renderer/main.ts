@@ -27,7 +27,7 @@ import { ProjectXProvider } from './providers/ProjectXProvider';
 import { LocalArchiveProvider } from './providers/LocalArchiveProvider';
 import { isReplayContext } from './replay/replayActions';
 import { resumeReplay, startReplay, type MountedReplay } from './replay/replayBootstrap';
-import { askReplaySetup } from './replay/replaySetup';
+import { mountReplayHub, type ReplayHub, type SetupChoice } from './replay/replayHub';
 import { openRunsDialog } from './runs/runsDialog';
 import { loadPrefs, savePrefs, type AppPrefs } from './settings/prefs';
 import { mountSettingsView, type SettingsViewHandle } from './settings/settingsView';
@@ -215,6 +215,7 @@ function repaint(): void {
     const t = palette();
     workspace.setTheme(t);
     mountedReplayWs?.setTheme(t);
+    replayHub?.setTheme(t);
     backtestView?.setTheme(t);
     ensureUIHost(document.body, t);
     // The Trading Bot tab builds a chart of its own, which is wearing the old palette until
@@ -240,8 +241,7 @@ async function selectTab(tab: AppTab): Promise<void> {
         return;
     }
     if (tab === 'replay') {
-        const opened = await openReplay();
-        activateTopbar(opened ? 'replay' : 'chart');
+        await openReplay();
         return;
     }
     if (tab === 'analysis') {
@@ -648,36 +648,75 @@ workspace.refreshActions();
 // the live workspace's feed. The live chart is hidden rather than torn down —
 // leaving the session is meant to be instant.
 
-let mounted = false;
+/** The session on screen, or null between sessions. */
+let replay: MountedReplay | null = null;
+/** A session is being built — a second press on the tab must not start another. */
+let replayOpening = false;
+/** What the Replay tab shows between sessions; built the first time the tab is opened. */
+let replayHub: ReplayHub | null = null;
 
-/** Open (or return to) the replay view. Resolves `false` only when a fresh setup was
- *  asked for and dismissed — every other path either mounts a session or throws. */
-async function openReplay(): Promise<boolean> {
-    if (mounted) {
-        showOnly(replayRoot); // already running — the Chart tab may have hidden it
-        return true;
-    }
+function hub(): ReplayHub {
+    replayHub ??= mountReplayHub(replayRoot, palette(), (choice) => void beginReplay(choice));
+    return replayHub;
+}
 
-    const choice = await askReplaySetup(document.body);
-    if (!choice) return false; // dismissed — stay on the live chart
+/**
+ * Take the session down and go back to the Replay tab, where it now appears — put down or filed
+ * as a run — and where the next one is started.
+ *
+ * Deferred one turn: it is called from inside the session's own buttons, and destroying the
+ * workspace that is still dispatching the click would pull the topbar out from under it.
+ */
+function leaveReplay(outcome: { message: string; kind: 'info' | 'success' }): void {
+    setTimeout(() => {
+        const session = replay;
+        if (!session) return;
+        replay = null;
+        mountedReplayWs = null;
+        delete (window as unknown as { __replay?: MountedReplay }).__replay;
+        session.dispose();
+        // Whatever a half-released part left behind must not sit under the next session.
+        for (const child of [...replayRoot.children]) if (child !== hub().el) child.remove();
+        hub().el.hidden = false;
+        hub().notice(outcome.message, outcome.kind);
+        showOnly(replayRoot);
+        activateTopbar('replay');
+        hub().refresh().catch((err: unknown) => console.error('[midorii] could not read the replay hub', err));
+    }, 0);
+}
 
+/** Show the Replay tab: the running session if there is one, otherwise the hub. */
+async function openReplay(): Promise<void> {
     showOnly(replayRoot);
-    mounted = true;
+    activateTopbar('replay');
+    if (replay || replayOpening) return; // a session is on screen — the Chart tab may have hidden it
+    const h = hub();
+    h.el.hidden = false;
+    await h.refresh();
+}
 
+/** Open what the hub chose. A session that cannot be opened is said so on the hub, not lost. */
+async function beginReplay(choice: SetupChoice): Promise<void> {
+    if (replay || replayOpening) return;
+    const h = hub();
+    replayOpening = true;
+    h.setBusy(true);
+    h.showError('');
     try {
-        const replay: MountedReplay = choice.kind === 'new'
-            ? await startReplay(replayRoot, choice.setup, palette())
-            : await resumeReplay(replayRoot, choice.sessionId, palette());
-        mountedReplayWs = replay.ws;
-        (window as unknown as { __replay: typeof replay }).__replay = replay;
+        const mounted: MountedReplay = choice.kind === 'new'
+            ? await startReplay(replayRoot, choice.setup, palette(), leaveReplay)
+            : await resumeReplay(replayRoot, choice.sessionId, palette(), leaveReplay);
+        replay = mounted;
+        mountedReplayWs = mounted.ws;
+        (window as unknown as { __replay: MountedReplay }).__replay = mounted;
+        h.el.hidden = true;
     } catch (err) {
-        // Nothing mounted, so put the live chart back rather than leaving an
-        // empty panel with no way out of it.
-        showOnly(chartRoot);
-        mounted = false;
-        throw err;
+        console.error('[midorii] could not open the replay session', err);
+        h.showError(`Could not open the session: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+        replayOpening = false;
+        h.setBusy(false);
     }
-    return true;
 }
 
 // ── the view this machine opens on ───────────────────────────────────────

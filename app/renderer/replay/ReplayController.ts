@@ -1,7 +1,7 @@
 import type { ControlledPosition } from '../trading/TradingController';
 import { ReplaySession } from '../../../shared/engine/replaySession.js';
 import type { ReplayBar, ReplayResult } from '../../../shared/engine/replaySession.js';
-import type { Broker, Costs, Order, OrderSpec, ProtectionLevels } from '../../../shared/engine/broker.js';
+import type { Broker, Costs, Order, OrderSpec, PositionMode, ProtectionLevels } from '../../../shared/engine/broker.js';
 import { timeframeToMs } from '../../../src';
 import type { IndicatorHandle } from '../../../src';
 import type { MidoriTick } from '../midori';
@@ -14,6 +14,8 @@ import { loadReplayWindow } from './replayWindow';
 import { applyOp, type ReplayOp } from './replayOps';
 import { ReplayJournal, nextBarClock, rebuildSession, type PlayMode } from './replayJournal';
 import type { TickFeed } from './tickFeed';
+import { MAX_SHOTS } from '../../../shared/journal.js';
+import { dataUrlBytes, readableError } from '../journal/images';
 
 /** Playback speeds on candles, in bars per second. */
 export const SPEEDS = [1, 2, 4, 10, 30] as const;
@@ -28,6 +30,23 @@ const TICK_FRAME_MS = 100;
  * quiet, and quiet is part of what is being practised.
  */
 const IDLE_SKIP_MS = 60_000;
+/** How much market time Go-to plays at once on ticks. */
+const GOTO_TICK_STRETCH_MS = 15 * 60_000;
+
+/** A picture of the chart taken for the journal, kept until the session is filed as a run. */
+export interface ReplayShot {
+    /** An inline PNG. */
+    png: string;
+    /** The session clock it was taken at. */
+    takenAt: number;
+    label: string;
+}
+
+/** What filing a session came to: the run, and which snapshots could not be attached to it. */
+export interface FiledRun {
+    id: string;
+    failed: string[];
+}
 
 /** The charts beside the one that trades — what a parked session brings back with it. */
 export interface ReplayGrid {
@@ -47,6 +66,14 @@ export interface ReplayControllerOptions {
     startIndex: number;
     balance?: number;
     costs?: Costs;
+    /** Money per point per unit — 1 for a coin or a share, the contract's value for a future. */
+    pointValue?: number;
+    /** The smallest a size may move by, or null for no step. */
+    sizeStep?: number | null;
+    /** The least a position may ever be, or null for no minimum. */
+    minSize?: number | null;
+    /** Whether an opposite order opens a position of its own. Fixed for the session. */
+    mode?: PositionMode;
     /**
      * A `ReplaySession.snapshot()` to pick up instead of starting fresh. The
      * playhead comes from its clock, not from `startIndex` — that is what lets a
@@ -57,6 +84,10 @@ export interface ReplayControllerOptions {
     forming?: ReplayBar | null;
     /** Id of the stored session being resumed, so saving updates that entry. */
     restoredSessionId?: string | null;
+    /** What the session is called in the list it is put down in. */
+    name?: string;
+    /** Snapshots a parked session was put down with. */
+    shots?: ReplayShot[];
     /**
      * The journal a parked session was saved with — see replayJournal.ts. Absent on a fresh
      * session, and on one parked before journals were kept: that one can go back as far as
@@ -118,6 +149,8 @@ export class ReplayController {
     private retimeGeneration = 0;
     /** Set once a session has been put down, so saving again replaces that entry. */
     private savedSessionId: string | null = null;
+    private readonly name: string;
+    private shots: ReplayShot[];
     private timer: ReturnType<typeof setInterval> | null = null;
     private speedBarsPerSec: number = 4;
     private tickSpeed: number = 5;
@@ -135,6 +168,10 @@ export class ReplayController {
     private quiet = false;
     /** A frame of tick playback is still loading or playing; the timer waits for it. */
     private tickBusy = false;
+    /** Whoever wants to hear that the session moved — see {@link onChange}. */
+    private readonly listeners = new Set<() => void>();
+    /** The session has been left — see {@link destroy}. */
+    private disposed = false;
     /** See {@link ReplayControllerOptions.onAccountChange}. */
     onAccountChange: (() => void) | null;
     /** What the other charts of the window show, for a session that is put down. */
@@ -159,6 +196,8 @@ export class ReplayController {
         this.onAccountChange = opts.onAccountChange ?? null;
         this.onNotice = opts.onNotice ?? null;
         this.savedSessionId = opts.restoredSessionId ?? null;
+        this.name = opts.name ?? '';
+        this.shots = [...(opts.shots ?? [])];
         this.rechart = opts.rechart ?? null;
         this.ticks = opts.ticks ?? null;
         this.current = opts.restoreFrom
@@ -168,6 +207,10 @@ export class ReplayController {
                 startIndex: opts.startIndex,
                 balance: opts.balance,
                 costs: opts.costs,
+                pointValue: opts.pointValue,
+                sizeStep: opts.sizeStep,
+                minSize: opts.minSize,
+                mode: opts.mode,
             });
 
         let journal: ReplayJournal | null = null;
@@ -228,10 +271,33 @@ export class ReplayController {
      * primitives only) — a deliberate workaround, not a Vela feature.
      */
     private pushState(): void {
+        if (this.disposed) return;
         this.onClock?.(this.current.clock);
         this.onAccountChange?.();
+        this.emit();
         if (!this.indicator) return;
         this.indicator.setInput(STATE_INPUT, JSON.stringify(visualState(this.current.broker, this.current.bar.close)));
+    }
+
+    /**
+     * Hear about every change of the session: a bar revealed, a jump landed, playback started or
+     * stopped, the speed or the way of playing changed. Beside the single `on…` slots rather than
+     * instead of them — those belong to the parts that were wired first. Returns the way to stop.
+     */
+    onChange(listener: () => void): () => void {
+        this.listeners.add(listener);
+        return () => { this.listeners.delete(listener); };
+    }
+
+    private emit(): void {
+        if (this.disposed) return;
+        for (const listener of [...this.listeners]) {
+            try {
+                listener();
+            } catch (err: unknown) {
+                console.error('[midorii] a replay listener failed', err);
+            }
+        }
     }
 
     /** The newest price the session stands on — what a market order fills against. */
@@ -252,6 +318,28 @@ export class ReplayController {
     /** What is open right now, for the chart's own gestures. */
     positions(): readonly ControlledPosition[] {
         return this.current.broker.positions;
+    }
+
+    /** What one point of price is worth per unit. A trade sized without it is out by that multiple. */
+    pointValue(): number {
+        return this.current.broker.pointValue;
+    }
+
+    /** The size grid, for a ticket that has to show a size before sending it. */
+    dealingRules(): { sizeStep?: number; minSize?: number } {
+        const { sizeStep, minSize } = this.current.broker;
+        return {
+            ...(sizeStep != null ? { sizeStep } : {}),
+            ...(minSize != null ? { minSize } : {}),
+        };
+    }
+
+    /** The largest size at or below `size` the account deals in, or 0 where none is. */
+    sizeOnGrid(size: number): number {
+        const { sizeStep: step, minSize } = this.current.broker;
+        const out = step != null ? Number((Math.floor((size + step * 1e-9) / step) * step).toFixed(8)) : size;
+        if (!(out > 0)) return 0;
+        return minSize != null && out < minSize ? 0 : out;
     }
 
     // ── transport ────────────────────────────────────────────────────────
@@ -360,6 +448,7 @@ export class ReplayController {
         if (this.playMode === 'ticks') this.startTickPlay();
         else this.startTicking();
         this.onPlayStateChange?.();
+        this.emit();
     }
 
     pause(): void {
@@ -367,6 +456,7 @@ export class ReplayController {
         clearInterval(this.timer);
         this.timer = null;
         this.onPlayStateChange?.();
+        this.emit();
     }
 
     setSpeed(speed: number): void {
@@ -381,6 +471,7 @@ export class ReplayController {
             if (this.playMode === 'ticks') this.startTickPlay();
             else this.startTicking();
         }
+        this.emit();
     }
 
     /**
@@ -404,6 +495,7 @@ export class ReplayController {
         }
         this.playMode = mode;
         this.journal.recordMode(this.current.clock, mode);
+        this.emit();
     }
 
     /**
@@ -435,7 +527,7 @@ export class ReplayController {
         // A faster switch overtook this one while the bars were loading; its
         // window is the current one and this one would rebase back onto a
         // timeframe the chart has already left.
-        if (generation !== this.retimeGeneration) return;
+        if (generation !== this.retimeGeneration || this.disposed) return;
 
         this.current.rebase(window_);
         this.currentTimeframe = timeframe;
@@ -491,7 +583,9 @@ export class ReplayController {
                     loadTicks: (source, from, to) => window.midori.ticks.read({ name: source, from, to }),
                 },
             );
+            if (this.disposed) return;
             const provider = await this.rechart(timeframe, rebuilt.session.clock);
+            if (this.disposed) return;
 
             const spent = this.current.elapsedMs;
             const next = rebuilt.session as ReplaySession & { elapsedBefore: number; startedAt: number };
@@ -509,6 +603,53 @@ export class ReplayController {
         } finally {
             this.jumping = false;
         }
+    }
+
+    /**
+     * One candle back: the candle in progress goes back to its start, a closed one to the close
+     * of the candle before it. Everything done after that is undone, exactly as {@link jumpTo}.
+     */
+    async stepBack(): Promise<void> {
+        const { bar, clock } = this.current;
+        const span = timeframeToMs(this.currentTimeframe);
+        await this.jumpTo(bar.time < clock && clock < bar.time + span ? bar.time : bar.time - span);
+    }
+
+    /**
+     * Take the clock to `target` — on, by playing up to it, or back, by undoing what was done
+     * since. Lands on the last whole candle that has closed by then on candles, and on the
+     * instant itself on ticks. Returns where the clock ended up, which is short of `target` only
+     * where the loaded candles or the recording run out first.
+     */
+    async goTo(target: number): Promise<number> {
+        if (!Number.isFinite(target)) throw new Error('Pick a date and time to go to.');
+        if (this.jumping) throw new Error('The session is going back to an earlier candle — one moment.');
+        this.pause();
+        const session = this.current;
+        if (target >= session.clock) {
+            if (this.playMode === 'ticks') {
+                // In stretches: a day of prints held at once is more than a window should carry.
+                while (this.current === session && !this.disposed && !this.jumping && session.clock < Math.min(target, this.loadedEnd())) {
+                    await this.playTicksTo(Math.min(session.clock + GOTO_TICK_STRETCH_MS, target));
+                }
+            } else {
+                this.quiet = true;
+                try {
+                    for (let next = nextBarClock(session); next !== null && next <= target; next = nextBarClock(session)) {
+                        this.step();
+                    }
+                } finally {
+                    this.quiet = false;
+                }
+                this.pushState();
+            }
+            return this.current.clock;
+        }
+        const span = timeframeToMs(this.currentTimeframe);
+        const onScreen = session.bars.filter((b) => b.time + span <= target).pop();
+        // Before the loaded candles there is nothing to look up: the grid the candles sit on is the answer.
+        await this.jumpTo(onScreen ? onScreen.time : Math.floor((target - span) / span) * span);
+        return this.current.clock;
     }
 
     private startTicking(): void {
@@ -573,7 +714,7 @@ export class ReplayController {
         const to = Math.min(until, this.loadedEnd());
         if (!(to > session.clock)) return;
         const events = await feed.between(session.clock, to);
-        if (session !== this.current || this.jumping) return;
+        if (session !== this.current || this.jumping || this.disposed) return;
 
         const { closed, prints } = session.advanceTicks(events as MidoriTick[], to);
         for (const bar of closed) this.provider.revealNext(bar);
@@ -699,6 +840,24 @@ export class ReplayController {
 
     // ── persistence ──────────────────────────────────────────────────────
 
+    /** How many snapshots are waiting to be filed with the run. */
+    get shotCount(): number {
+        return this.shots.length;
+    }
+
+    /**
+     * Keep a picture of the chart for the journal. Refused past the limit a run can hold, rather
+     * than dropping one the person chose to keep.
+     */
+    addShot(png: string, label = ''): void {
+        if (this.shots.length >= MAX_SHOTS) {
+            throw new Error(`A run keeps up to ${MAX_SHOTS} images — file this one first, or put the session down.`);
+        }
+        if (!png.startsWith('data:image/png;base64,')) throw new Error('The chart gave no image to keep.');
+        this.shots.push({ png, takenAt: this.current.clock, label });
+        this.emit();
+    }
+
     /**
      * Put the session down for later: the account and the clock go to disk, the
      * bars do not (they are already in the data store, and are the same bars
@@ -707,7 +866,7 @@ export class ReplayController {
      * The journal goes with it, so a session picked up tomorrow can still go back to a candle
      * from today — and so does the recording it plays, so it comes back on the same ticks.
      */
-    async saveSession(name = ''): Promise<string> {
+    async saveSession(name = this.name): Promise<string> {
         this.pause();
         const broker = this.current.broker;
         const { id } = await window.midori.replay.saveSession({
@@ -718,6 +877,7 @@ export class ReplayController {
             session: this.current.snapshot(),
             journal: this.journal.toRecord(),
             ticks: this.ticks?.source ?? null,
+            shots: this.shots,
             ...(this.grid ? { grid: this.grid() } : {}),
             stats: {
                 bars: this.current.steps,
@@ -736,19 +896,48 @@ export class ReplayController {
      * page a backtest lands in, so a hand-traded run and a strategy run compare
      * directly. Refused by the boundary if the session took no trades.
      */
-    async saveAsRun(note = ''): Promise<string> {
+    async saveAsRun(entry: { note?: string; tags?: string[] } = {}): Promise<FiledRun> {
         this.pause();
         const { id } = await window.midori.replay.save({
             symbol: this.symbol,
             timeframe: this.timeframe,
-            note,
+            note: entry.note ?? '',
+            tags: entry.tags ?? [],
             ...this.result(),
         });
-        return id;
+        /* The run is filed; what is left is attaching the pictures to it. One that cannot be
+         * attached must not undo the run, and must not pass unnoticed either — they are reported
+         * back for the caller to say. */
+        const failed: string[] = [];
+        for (const shot of this.shots) {
+            try {
+                await window.midori.runs.addShot(id, { data: dataUrlBytes(shot.png), label: shot.label, takenAt: shot.takenAt });
+            } catch (err: unknown) {
+                failed.push(readableError(err));
+            }
+        }
+        /* The run is where the session lives now. Leaving its parked copy behind would offer
+         * a finished afternoon for picking up again. */
+        if (this.savedSessionId) {
+            await window.midori.replay.deleteSession(this.savedSessionId);
+            this.savedSessionId = null;
+        }
+        return { id, failed };
     }
 
+    /**
+     * Stop for good. Anything still in flight — a frame of ticks being read, a window being
+     * loaded — lands on a chart that is being torn down, so everything that would touch one
+     * checks {@link disposed} first.
+     */
     destroy(): void {
+        this.disposed = true;
         this.pause();
+    }
+
+    /** Set once the session has been left; nothing may paint after it. */
+    get isDisposed(): boolean {
+        return this.disposed;
     }
 }
 

@@ -1,10 +1,12 @@
 import { registerIcon, registerWidgetAction } from '../../../src/plugin';
 import type { Vela } from '../../../src';
 import type { VelaWorkspace } from '../../../src/workspace';
-import { SPEEDS, type ReplayController } from './ReplayController';
+import type { ReplayController } from './ReplayController';
 import { armOrderTool } from './replayOrders';
 import { lastCrosshairTime } from '../alerts/cursorPrice';
-import { askSetupStrategy, findNextSetup, loadSetupStrategy, saveSetupStrategy, strategyName } from './setupStrategy';
+import { askJournalEntry } from '../journal/journalEntryDialog';
+import { timeframeLabel } from '../../../src/widget/timeframe';
+import { askSetupStrategy, loadSetupStrategy, saveSetupStrategy, strategyName } from './setupStrategy';
 
 /**
  * The replay controls, contributed into Vela's own topbar — no custom chrome.
@@ -18,24 +20,32 @@ import { askSetupStrategy, findNextSetup, loadSetupStrategy, saveSetupStrategy, 
 
 let active: ActiveReplay | null = null;
 
+/**
+ * Leave the session: the screen takes it down and says `message` where the person lands.
+ *
+ * The session's own workspace is about to be destroyed, so the words cannot go through its
+ * toast — whoever takes the session down owns saying what happened to it.
+ */
+export type LeaveHandler = (outcome: { message: string; kind: 'info' | 'success' }) => void;
+
 export interface ActiveReplay {
     controller: ReplayController;
     ws: VelaWorkspace;
     /** The chart the session trades on. The window's other charts only watch its clock. */
     primary: () => Vela;
+    /** Take the session down once it has been put down or filed. */
+    leave: LeaveHandler;
+    /** Open the stop and target a fresh ticket starts with. */
+    editBrackets: () => void;
 }
 
 const ICONS: Record<string, string> = {
-    'replay-step': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3.5 10.5 8 5 12.5"/><path d="M12 3.5v9"/></svg>',
-    'replay-ticks': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 9h2l1.5-4 2 7 2-9 2 6 1-2h2.5"/></svg>',
-    'replay-bars': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2.5v11M12 2.5v11"/><rect x="2.5" y="5" width="3" height="6" rx="0.5"/><rect x="10.5" y="4" width="3" height="5" rx="0.5"/></svg>',
-    'replay-setup': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="8" r="3.5"/><path d="M6.5 3v1.5M6.5 11.5V13M1.5 8H3M10 8h1.5"/><path d="M12 5.5 14.5 8 12 10.5"/></svg>',
-    'replay-skip': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5 7 8l-4.5 4.5"/><path d="M8 3.5 12.5 8 8 12.5"/></svg>',
-    'replay-play': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M4.5 3.2v9.6L12.8 8z"/></svg>',
-    'replay-pause': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><rect x="4" y="3.2" width="3" height="9.6" rx="0.6"/><rect x="9" y="3.2" width="3" height="9.6" rx="0.6"/></svg>',
+    'replay-brackets': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11M2.5 12.5h11"/><path d="M8 5.5v5"/><path d="M6.2 7.3 8 5.5l1.8 1.8M6.2 8.7 8 10.5l1.8-1.8"/></svg>',
+    'replay-snapshot': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5h2.2l1-1.5h3.6l1 1.5H14v7.5H2z"/><circle cx="8" cy="8.8" r="2.1"/></svg>',
     'replay-flatten': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/></svg>',
     'replay-order': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="11" height="4.5" rx="0.8"/><path d="M2.5 11.5h11"/><path d="M8 2v2M8 8.5v3"/></svg>',
     'replay-park': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h8.5L13 4v9.5H3z"/><path d="M5.5 2.5v4h5v-4"/></svg>',
+    'replay-discard': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5M6.8 7v3.8M9.2 7v3.8"/></svg>',
     'replay-finish': '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 4.8"/></svg>',
 };
 
@@ -76,132 +86,6 @@ function report(ctx: { toast(message: string, kind?: 'info' | 'error' | 'success
 }
 
 function registerControls(): void {
-    const playing = active?.controller.playing ?? false;
-    const speed = active?.controller.speed ?? SPEEDS[2];
-    const onTicks = active?.controller.mode === 'ticks';
-
-    registerWidgetAction({
-        id: 'replay.step',
-        target: 'topbar',
-        align: 'right',
-        order: 1,
-        iconOnly: true,
-        label: onTicks ? 'Play to the end of this candle' : 'Step one bar',
-        icon: 'replay-step',
-        when: onActiveChart,
-        run: (ctx) => {
-            void active?.controller.stepForward().then(refreshControls).catch(report(ctx));
-        },
-    });
-
-    registerWidgetAction({
-        id: 'replay.skip',
-        target: 'topbar',
-        align: 'right',
-        order: 2,
-        iconOnly: true,
-        label: onTicks ? 'Play ten candles on' : 'Skip 10 bars',
-        icon: 'replay-skip',
-        when: onActiveChart,
-        run: (ctx) => {
-            void active?.controller.skipForward(10).then(refreshControls).catch(report(ctx));
-        },
-    });
-
-    /* Candles or ticks — only where the session has a recording to play. The face says what a
-     * press switches TO, the way the play button does. */
-    registerWidgetAction({
-        id: 'replay.playMode',
-        target: 'topbar',
-        align: 'right',
-        order: 0.5,
-        iconOnly: true,
-        label: onTicks ? 'Play on candles' : 'Play the recorded ticks',
-        icon: onTicks ? 'replay-bars' : 'replay-ticks',
-        when: (ctx) => onActiveChart(ctx) && active?.controller.ticks != null,
-        run: (ctx) => {
-            if (!active) return;
-            const next = active.controller.mode === 'ticks' ? 'bars' : 'ticks';
-            void active.controller.setPlayMode(next)
-                .then(() => {
-                    refreshControls();
-                    ctx.toast(next === 'ticks'
-                        ? 'Playing the recorded prints and quotes — the Ladder and the Tape follow them.'
-                        : 'Playing candles, one bar at a time.');
-                })
-                .catch(report(ctx));
-        },
-    });
-
-    registerWidgetAction({
-        id: 'replay.nextSetup',
-        target: 'topbar',
-        align: 'right',
-        order: 2.5,
-        iconOnly: true,
-        label: 'Skip to the next setup',
-        icon: 'replay-setup',
-        when: onActiveChart,
-        run: (ctx) => {
-            if (!active) return;
-            const { controller, ws } = active;
-            void (async () => {
-                let id = loadSetupStrategy();
-                if (!id) {
-                    id = await askSetupStrategy(ws.root, null);
-                    if (!id) return;
-                    saveSetupStrategy(id);
-                }
-                // Stepping under a running timer would interleave two playheads' worth of bars.
-                controller.pause();
-                refreshControls();
-                const index = await findNextSetup(controller, id);
-                if (index == null) {
-                    ctx.toast(`No ${strategyName(id)} setup before the end of the loaded bars.`);
-                    return;
-                }
-                const stepped = await controller.skipToIndex(index);
-                ctx.toast(`${strategyName(id)} setup — ${stepped} ${stepped === 1 ? 'candle' : 'candles'} on.`, 'success');
-            })().catch((e: unknown) => ctx.toast(e instanceof Error ? e.message : String(e), 'error'));
-        },
-    });
-
-    registerWidgetAction({
-        id: 'replay.playPause',
-        target: 'topbar',
-        align: 'right',
-        order: 3,
-        iconOnly: true,
-        label: playing ? 'Pause' : 'Play',
-        icon: playing ? 'replay-pause' : 'replay-play',
-        when: onActiveChart,
-        run: () => {
-            if (!active) return;
-            if (active.controller.playing) active.controller.pause();
-            else active.controller.play();
-            refreshControls();
-        },
-    });
-
-    // A cycling button rather than a dropdown: five fixed steps, and a
-    // WidgetContext carries no trigger element to anchor a menu to.
-    registerWidgetAction({
-        id: 'replay.speed',
-        target: 'topbar',
-        align: 'right',
-        order: 4,
-        label: `${speed}×`,
-        when: onActiveChart,
-        run: (ctx) => {
-            if (!active) return;
-            const { speeds } = active.controller;
-            const next = speeds[(speeds.indexOf(active.controller.speed) + 1) % speeds.length]!;
-            active.controller.setSpeed(next);
-            refreshControls();
-            ctx.toast(active.controller.mode === 'ticks' ? `Ticks at ${next}× real time` : `Replay speed ${next} bars/sec`);
-        },
-    });
-
     registerWidgetAction({
         id: 'replay.order',
         target: 'topbar',
@@ -215,6 +99,42 @@ function registerControls(): void {
             if (!active) return;
             armOrderTool(active.primary());
             ctx.toast('Click the entry, drag to the target — then right-click the block to order');
+        },
+    });
+
+    registerWidgetAction({
+        id: 'replay.brackets',
+        target: 'topbar',
+        align: 'right',
+        order: 5.5,
+        iconOnly: true,
+        label: 'Stop and target for a fresh ticket',
+        icon: 'replay-brackets',
+        when: onTradingChart,
+        run: () => active?.editBrackets(),
+    });
+
+    registerWidgetAction({
+        id: 'replay.snapshot',
+        target: 'topbar',
+        align: 'right',
+        order: 5.8,
+        iconOnly: true,
+        label: 'Keep a snapshot of the chart for the journal',
+        icon: 'replay-snapshot',
+        when: onActiveChart,
+        run: (ctx) => {
+            if (!active) return;
+            const { controller, ws } = active;
+            try {
+                const image = ws.screenshot();
+                if (!image) throw new Error('The chart could not be captured.');
+                // Numbered, not timed: the image carries the session clock it was taken at.
+                controller.addShot(image, `Snapshot ${controller.shotCount + 1}`);
+                ctx.toast(`Snapshot ${controller.shotCount} kept — it is filed with the run when you end the session.`, 'success');
+            } catch (e: unknown) {
+                ctx.toast(e instanceof Error ? e.message : String(e), 'error');
+            }
         },
     });
 
@@ -249,12 +169,10 @@ function registerControls(): void {
         when: onActiveChart,
         run: (ctx) => {
             if (!active) return;
-            void active.controller
+            const { controller, leave } = active;
+            void controller
                 .saveSession()
-                .then(() => {
-                    refreshControls(); // playback stopped as part of saving
-                    ctx.toast('Session put down — pick it up later');
-                })
+                .then(() => leave({ message: 'Session put down — pick it up again from the Replay tab.', kind: 'info' }))
                 .catch((e: unknown) => ctx.toast(e instanceof Error ? e.message : String(e), 'error'));
         },
     });
@@ -270,14 +188,68 @@ function registerControls(): void {
         when: onActiveChart,
         run: (ctx) => {
             if (!active) return;
-            void active.controller
-                .saveAsRun()
-                .then(() => {
-                    refreshControls();
-                    ctx.toast('Saved to the results library', 'success');
+            const { controller, leave, ws } = active;
+            /* Said before anything is asked: a session with no trades cannot be filed, and a
+             * dialog that took a note only to be refused would have wasted it. */
+            if (controller.broker.trades.length === 0) {
+                ctx.toast('This session took no trades, so there is nothing to file as a run. Discard it, or place a trade first.', 'error');
+                return;
+            }
+            controller.pause();
+            void askJournalEntry(ws.root, {
+                session: `${controller.symbol} · ${timeframeLabel(controller.timeframe)}`,
+                snapshots: controller.shotCount,
+            })
+                .then(async (entry) => {
+                    if (!entry) return; // dismissed — the session carries on
+                    const { failed } = await controller.saveAsRun(entry);
+                    if (failed.length === 0) {
+                        leave({ message: 'Session saved as a run — open it in Analysis → Sessions.', kind: 'success' });
+                        return;
+                    }
+                    // The run exists, so the session is over; what did not come with it is said out loud.
+                    leave({
+                        message: `Session saved as a run, but ${failed.length} ${failed.length === 1 ? 'snapshot' : 'snapshots'} `
+                            + `could not be attached: ${failed[0]}`,
+                        kind: 'info',
+                    });
                 })
-                // The boundary refuses a session with no trades — say so plainly.
                 .catch((e: unknown) => ctx.toast(e instanceof Error ? e.message : String(e), 'error'));
+        },
+    });
+}
+
+/** How long a first press on Discard stays armed. */
+const DISCARD_ARM_MS = 5000;
+let discardArmedAt = 0;
+
+/**
+ * Throw the session away without filing anything.
+ *
+ * The one way out of a session that took no trades — filing one is refused — and the one that
+ * cannot be undone, so it takes two presses: the first says what it will do, the second does it.
+ */
+function registerDiscard(): void {
+    registerWidgetAction({
+        id: 'replay.discard',
+        target: 'topbar',
+        align: 'right',
+        order: 9,
+        iconOnly: true,
+        label: 'Discard session',
+        icon: 'replay-discard',
+        when: onActiveChart,
+        run: (ctx) => {
+            if (!active) return;
+            const now = Date.now();
+            if (now - discardArmedAt > DISCARD_ARM_MS) {
+                discardArmedAt = now;
+                ctx.toast('Press Discard again to throw this session away. Nothing is saved.', 'info');
+                return;
+            }
+            discardArmedAt = 0;
+            active.controller.pause();
+            active.leave({ message: 'Session discarded.', kind: 'info' });
         },
     });
 }
@@ -321,18 +293,11 @@ function registerJumpHere(): void {
             const { controller } = active;
             void controller.jumpTo(time)
                 .then(() => {
-                    refreshControls(); // playback was stopped for the rebuild
                     ctx.toast(`Back at ${candleLabel(time)} UTC — everything done after it is gone.`, 'success');
                 })
                 .catch((e: unknown) => ctx.toast(e instanceof Error ? e.message : String(e), 'error'));
         },
     });
-}
-
-/** Re-register (faces are static) and let the shell rebuild its topbar. */
-function refreshControls(): void {
-    registerControls();
-    active?.ws.refreshActions();
 }
 
 /** Point the replay controls at a mounted session — or `null` to retire them. */
@@ -341,15 +306,9 @@ export function setActiveReplay(next: ActiveReplay | null): void {
     const previous = active;
     active = next;
     registerControls();
+    registerDiscard();
     registerJumpHere();
+    discardArmedAt = 0;
     next?.ws.refreshActions();
     if (previous && previous !== next) previous.ws.refreshActions();
-}
-
-/**
- * Keep the play/pause face honest when playback stops on its own (the session
- * reaching its last bar), which no click told the topbar about.
- */
-export function syncControls(): void {
-    refreshControls();
 }

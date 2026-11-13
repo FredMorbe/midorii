@@ -7,6 +7,43 @@ Vela's — the charting library Midorii is built on and forked from.
 
 ### Added
 
+- **Keep a journal for every replay.** Ending a session now asks what you saw and what to file it
+  under — a note and tags, both optional — and a new button in the top bar keeps a snapshot of the
+  chart at any moment of the session. The snapshots are filed with the run, and survive putting
+  the session down and picking it up again.
+
+- **Trade a replay like a funded account.** The ticket beside the chart now has a History tab
+  with every trade the session has closed, the quick-size buttons and the sizing choice are
+  remembered from one session to the next, and a new button in the top bar sets the stop and
+  target a fresh ticket starts with. Under the chart, the trade list shows how the session is
+  doing — net result, return, win rate, drawdown and fees — and a Limits button sets a floor, a
+  daily loss limit and a profit goal. Orders that would break a limit are refused, and a session
+  can be set to close everything when one is past. Limits are judged on the market's own days
+  and on the balance the session started with, not on the clock on your wall.
+
+- **A transport bar under the replay chart.** Play, pause, step one candle on or back, play ten
+  candles, change the speed, switch between candles and recorded ticks, and play on to the next
+  setup — all in one bar under the chart, with the session's clock beside it. Type a date and
+  time under "Go to" to play on up to it, or to go back to it and undo what you did after it.
+  The same things are on the keyboard: Space plays or pauses, `.` and `,` step on and back, `>`
+  plays ten candles, `[` and `]` change the speed, `N` plays to the next setup, `M` switches
+  between candles and ticks and `G` jumps to the date field. They are listed with the chart's
+  other shortcuts.
+
+- **A Replay home that manages your sessions.** The Replay tab now opens on a screen of its own
+  instead of a dialog. Start a session there — give it a name, pick a market, jump to a random
+  point in its data, and see which dates the data covers — or carry on with one you put down
+  earlier. Each saved session can be resumed, renamed, duplicated to play the same position out
+  another way, or deleted. When you pause, finish or discard a session you land back on this
+  screen, and a session you finish no longer stays in the list of ones to pick up.
+
+- **Set up a replay account for the market you practise on.** The new-session form now asks
+  how the account is kept: whether trading costs are charged, what one point of price is worth,
+  the size step, the minimum size, and whether an opposite order opens a position of its own
+  (hedging, on by default). Pick a recorded futures contract and the dialog fills these in from
+  the contract's own tick size and value — costs off, whole contracts only — and says so; change
+  any of them and your choice stands.
+
 - **Show several charts at once.** The Chart tab has a layout menu beside the symbol: pick a
   grid of up to sixteen charts and give each one its own market and bar interval. Price
   alerts and the bid/ask card appear on every chart for the market it shows, and the grid
@@ -126,6 +163,17 @@ Vela's — the charting library Midorii is built on and forked from.
   bot on the paper account.)_
 
 ### Fixed
+
+- **A replay on an index future now books real money.** Every replay session was charged a
+  crypto account's fees and counted one point of price as one dollar, so a trade on a futures
+  contract showed a fraction of what it made or lost, and risk-based sizing sized it far too
+  large. The account, the ticket, the quick Buy/Sell panel and the chart's position block now
+  all use the session's point value and size grid, and a session put down keeps them.
+
+- **You can leave a replay and start another.** Ending a session as a run, putting it down for
+  later, or the new **Discard session** button (press twice) now returns you to the Replay tab, which
+  offers a new session or one to pick up again, instead of showing the old one until the app was
+  restarted.
 
 - **Bot controls stay responsive during live updates.** Stop, the Live and Settings tabs,
   and bot selection keep accepting clicks while market prices update. Switching bots keeps

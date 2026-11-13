@@ -12,7 +12,11 @@ import { mountQuickPanel } from './quickPanel';
 import { mountTradeDock } from './tradeDock';
 import { mountTradeSidebar } from './tradeSidebar';
 import type { TradeSidebar } from './tradeSidebar';
-import { setActiveReplay, syncControls } from './replayActions';
+import { setActiveReplay, type LeaveHandler } from './replayActions';
+import { mountTransport } from './replayTransport';
+import { wireReplayRules, type ReplayRules } from './replayRules';
+import { loadReplayTrading, openBracketDefaults, saveReplayTrading, type ReplayTradingSettings } from './replayTradingSettings';
+import { historyStats } from '../trading/accountStats';
 import { REPLAY_INDICATOR_TYPE, registerReplayIndicator } from './replayIndicator';
 import { wireOrderEntry } from './replayOrders';
 import { wirePendingMenu } from './chartPending';
@@ -26,6 +30,7 @@ import { wireRadialMenu } from '../settings/radialMenuPrefs';
 import { bareSymbol, mountMirrors } from './replayMirrors';
 import { TickFeed } from './tickFeed';
 import type { TapePrint } from './timeAndSales';
+import { SPOT_ACCOUNT, accountOptions, type ReplayAccountSettings } from './instrument';
 
 /**
  * The timeframe a fresh replay opens on.
@@ -49,6 +54,13 @@ export interface ReplaySetup {
     balance?: number;
     /** The recording to play on ticks — a contract name, `NQU6` — or none. */
     ticks?: string | null;
+    /** What the session is called in the session list. */
+    name?: string;
+    /**
+     * How the account is kept — costs, what a point is worth, the size grid, hedging. Absent
+     * means a spot account, which is what every session was before these were asked.
+     */
+    account?: ReplayAccountSettings;
 }
 
 /** What a mounted replay hands back. (Not the engine's ReplaySession — that's the account.) */
@@ -56,6 +68,11 @@ export interface MountedReplay {
     ws: VelaWorkspace;
     provider: ReplayProvider;
     controller: ReplayController;
+    /**
+     * Take the session down: stop playback, release the chart, the panels and every listener
+     * they put on the page. Safe to call once; the handle is of no use afterwards.
+     */
+    dispose(): void;
 }
 
 /**
@@ -100,12 +117,56 @@ type MakeController = (
     wiring: ControllerWiring,
 ) => ReplayController;
 
-/** Everything a mounted replay shares, whether it is new or resumed. */
+/** What a session is mounted from, new or resumed. */
+interface MountConfig {
+    symbol: string;
+    timeframe: string;
+    clock: number;
+    bars: ReplayBar[];
+    grid?: ReplayGrid | null;
+}
+
+/**
+ * Everything a mounted replay shares, whether it is new or resumed.
+ *
+ * A mount that fails half way is taken down again before the error goes on: otherwise the
+ * chart and the panels it had already built stay on the page, and the next attempt builds a
+ * second copy beside them.
+ */
 async function mount(
     container: HTMLElement,
-    cfg: { symbol: string; timeframe: string; clock: number; bars: ReplayBar[]; grid?: ReplayGrid | null },
+    cfg: MountConfig,
     makeController: MakeController,
     theme: VelaTheme,
+    onLeave: LeaveHandler,
+): Promise<MountedReplay> {
+    const cleanup: Array<() => void> = [];
+    const dispose = (): void => {
+        // Newest first: a panel is released before the chart it sits beside.
+        while (cleanup.length > 0) {
+            try {
+                cleanup.pop()!();
+            } catch (err: unknown) {
+                console.error('[midorii] a part of the replay could not be released', err);
+            }
+        }
+    };
+    try {
+        return await build(container, cfg, makeController, theme, onLeave, cleanup, dispose);
+    } catch (err) {
+        dispose();
+        throw err;
+    }
+}
+
+async function build(
+    container: HTMLElement,
+    cfg: MountConfig,
+    makeController: MakeController,
+    theme: VelaTheme,
+    onLeave: LeaveHandler,
+    cleanup: Array<() => void>,
+    dispose: () => void,
 ): Promise<MountedReplay> {
     const archive = new LocalArchiveProvider();
     let providerName = providerNameFor();
@@ -126,6 +187,7 @@ async function mount(
     main.appendChild(chartHost);
     stack.appendChild(main);
     container.appendChild(stack);
+    cleanup.push(() => stack.remove());
 
     /* The app's ONE chart document, worn here too — a session opens looking like the chart
      * it was started from rather than on the factory defaults. `remembers: false`: the market
@@ -144,7 +206,8 @@ async function mount(
         storage: doc.storage,
     });
     doc.attach(ws);
-    wireRadialMenu(ws);
+    cleanup.push(() => ws.destroy());
+    cleanup.push(wireRadialMenu(ws));
     /* The session trades on ONE chart of the window, whichever has the focus. Read through here
      * every time: the chart behind it is the one slot 1 holds, and it is never the active one
      * by default once there are several. */
@@ -185,6 +248,7 @@ async function mount(
 
     const notify = (message: string, kind: 'info' | 'error'): void => ws.toast(message, kind === 'error' ? 'error' : 'info');
     const controller = makeController(provider, cfg.bars, barIndexAt(cfg.bars, cfg.clock - 1), { rechart, notify });
+    cleanup.push(() => controller.destroy());
 
     /* The other charts of the window watch the session's clock — markets and timeframes of their
      * own, nothing of the account. See replayMirrors.ts. */
@@ -198,6 +262,7 @@ async function mount(
         fallback: () => ({ symbol: cfg.symbol, timeframe: controller.timeframe }),
         notify,
     });
+    cleanup.push(() => mirrors.dispose());
     controller.onClock = (clock) => mirrors.advance(clock);
     controller.onRewind = (clock) => { void mirrors.rewind(clock); };
     controller.grid = () => mirrors.grid();
@@ -214,47 +279,83 @@ async function mount(
     const indicator = primary().addNativeIndicator(REPLAY_INDICATOR_TYPE);
     controller.attachIndicator(indicator);
     // How those visuals look, and the Trading tab in the chart settings that says so.
-    wirePositionStyle({ workspace: ws, indicator });
+    cleanup.push(wirePositionStyle({ workspace: ws, indicator }).dispose);
     // Which cards this replay's chart puts on its plot. Its own workspace, so its own tab.
-    wireOverlaySettings(ws);
+    cleanup.push(wireOverlaySettings(ws).dispose);
+
+    /* The limits a funded account carries, and how this person likes to trade — both outlive the
+     * session, and both are read by every way into the market below. */
+    const rules = wireReplayRules({ controller, ws, onChange: () => controller.refreshVisuals() });
+    let trading = loadReplayTrading();
+    const habits = {
+        get: (): ReplayTradingSettings => trading,
+        set: (next: ReplayTradingSettings): void => {
+            trading = next;
+            saveReplayTrading(next);
+        },
+    };
 
     // The ticket beside the plot: the way in that does not go through a drawing.
-    const sidebar = showTicket(ws, main, controller, theme, primary);
+    const ticket = showTicket(ws, main, controller, theme, primary, rules, habits);
+    const sidebar = ticket.sidebar;
+    cleanup.push(ticket.dispose);
     // The ticket drawn where it would trade, before it is sent — see chartPreview.ts.
-    wireTradePreview({
+    cleanup.push(wireTradePreview({
         chart: primary(),
         indicator,
         sidebar,
         notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    });
+    }));
 
     // Vela's own position tool is the other way in — drawn like any other drawing, traded only
     // when its right-click menu says so, and sized by the panel's risk settings either way.
-    wireOrderEntry({
+    cleanup.push(wireOrderEntry({
         chart: primary(),
         controller,
         host: ws.root,
         risk: () => sidebar.risk(),
+        beforeOrder: (spec) => rules.guardOrder(spec),
         notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    });
+    }));
 
     // The open position's own levels: draggable stop and target, and a close button on the entry.
-    wirePositionLevels({
+    cleanup.push(wirePositionLevels({
         chart: primary(),
         controller,
         notify: (message, kind) => ws.toast(message, kind === 'error' ? 'error' : 'info'),
-    });
+    }));
 
     // Transport controls into Vela's own topbar.
-    setActiveReplay({ controller, ws, primary });
+    setActiveReplay({
+        controller,
+        ws,
+        primary,
+        leave: onLeave,
+        editBrackets: () => {
+            void openBracketDefaults(ws.root, habits.get().brackets)
+                .then((next) => {
+                    if (!next) return;
+                    habits.set({ ...habits.get(), brackets: next });
+                    sidebar.refresh();
+                    ws.toast(next.on
+                        ? 'A fresh ticket now starts with a stop and a target.'
+                        : 'A fresh ticket now starts without a stop and a target.');
+                })
+                .catch((err: unknown) => console.error('[midorii] the stop and target dialog failed', err));
+        },
+    });
+    cleanup.push(() => setActiveReplay(null));
 
-    showAccount(ws, primaryCell().host, stack, controller, sidebar);
+    // The transport under the chart, above the dock showAccount adds next.
+    cleanup.push(mountTransport({ stack, after: main, ws, controller, theme, primary }).dispose);
+
+    cleanup.push(showAccount(ws, primaryCell().host, stack, controller, sidebar, rules));
 
     followChartTimeframe(ws, primary, controller, cfg.symbol, notify, () => {
         void primary().setMarket({ symbol: `${providerName}:${cfg.symbol}`, timeframe: controller.timeframe });
     });
 
-    return { ws, provider, controller };
+    return { ws, provider, controller, dispose };
 }
 
 /** Run an engine call and put its refusal in front of the person who asked for it. The
@@ -274,7 +375,15 @@ function guarded(ws: VelaWorkspace, run: () => void): void {
  * the workspace writes on its own root do not reach it. They are re-applied when the chart's
  * theme changes, which is a thing the settings dialog can do mid-session.
  */
-function showTicket(ws: VelaWorkspace, main: HTMLElement, controller: ReplayController, theme: VelaTheme, primary: () => Vela): TradeSidebar {
+function showTicket(
+    ws: VelaWorkspace,
+    main: HTMLElement,
+    controller: ReplayController,
+    theme: VelaTheme,
+    primary: () => Vela,
+    rules: ReplayRules,
+    habits: { get(): ReplayTradingSettings; set(next: ReplayTradingSettings): void },
+): { sidebar: TradeSidebar; dispose: () => void } {
     const feed = controller.ticks;
 
     /* What the recording is of — above all its price increment, which the ladder is drawn on.
@@ -298,6 +407,9 @@ function showTicket(ws: VelaWorkspace, main: HTMLElement, controller: ReplayCont
         account: () => ({
             equity: controller.session.broker.equity,
             price: controller.session.bar.close,
+            // What a point is worth and the grid a size lands on — the ticket sizes against both.
+            pointValue: controller.pointValue(),
+            ...controller.dealingRules(),
             /* The recorded bid and ask, while the quote is fresh — what a market order here is
              * filled at, and what the ticket's two sides show. */
             ...(controller.session.broker.quote ?? {}),
@@ -307,10 +419,19 @@ function showTicket(ws: VelaWorkspace, main: HTMLElement, controller: ReplayCont
             return { positions: book.positions.length, orders: book.orders.length };
         },
         actions: {
-            order: (spec) => guarded(ws, () => controller.order(spec)),
+            order: (spec) => guarded(ws, () => { rules.guardOrder(spec); controller.order(spec); }),
             flatten: () => guarded(ws, () => controller.flatten()),
             cancelAll: () => guarded(ws, () => controller.cancelAll()),
         },
+        // What this session has already done, in the panel's own History tab.
+        history: rules.history,
+        /* Read fresh, like the settings they come from: the dialog changes them while the panel is
+         * on screen, and a ticket bracketed by last week's numbers is worse than one bracketed by none. */
+        brackets: () => habits.get().brackets,
+        quickSizes: () => habits.get().quickSizes,
+        onQuickSizes: (next) => habits.set({ ...habits.get(), quickSizes: next }),
+        sizing: () => habits.get().sizing,
+        onSizing: (next) => habits.set({ ...habits.get(), sizing: next }),
         ...(feed
             ? {
                 tick: () => tickSize ?? inferredTick,
@@ -362,13 +483,20 @@ function showTicket(ws: VelaWorkspace, main: HTMLElement, controller: ReplayCont
     ensureUIHost(sidebar.el, theme);
     primary().on('theme:changed', (theme) => applyThemeTokens(sidebar.el, theme));
     // A level right-clicked on the plot, onto the ticket as a resting order — not sent.
-    wirePendingMenu({
+    const offPending = wirePendingMenu({
         chart: primary(),
         sidebar,
         price: () => controller.price(),
         tick: () => tickSize ?? inferredTick,
     });
-    return sidebar;
+    return {
+        sidebar,
+        dispose: () => {
+            offPending();
+            sidebar.dispose();
+            sidebar.el.remove();
+        },
+    };
 }
 
 /**
@@ -378,7 +506,14 @@ function showTicket(ws: VelaWorkspace, main: HTMLElement, controller: ReplayCont
  * plot's own insets there for host overlays to use, and it is already a positioning context.
  * It is the cell of the chart the session trades on, whichever chart of the window has the focus.
  */
-function showAccount(ws: VelaWorkspace, cell: HTMLElement, stack: HTMLElement, controller: ReplayController, sidebar: TradeSidebar): void {
+function showAccount(
+    ws: VelaWorkspace,
+    cell: HTMLElement,
+    stack: HTMLElement,
+    controller: ReplayController,
+    sidebar: TradeSidebar,
+    rules: ReplayRules,
+): () => void {
     const strip = cell
         ? mountAccountStrip(cell, {
             broker: 'Replay',
@@ -391,7 +526,8 @@ function showAccount(ws: VelaWorkspace, cell: HTMLElement, stack: HTMLElement, c
     const quick = cell
         ? mountQuickPanel(cell, {
             price: () => controller.session.bar.close,
-            order: (spec) => guarded(ws, () => controller.order(spec)),
+            pointValue: () => controller.pointValue(),
+            order: (spec) => guarded(ws, () => { rules.guardOrder(spec); controller.order(spec); }),
             anchor: strip?.el ?? null,
         })
         : null;
@@ -404,24 +540,36 @@ function showAccount(ws: VelaWorkspace, cell: HTMLElement, stack: HTMLElement, c
     const dock = mountTradeDock(stack, {
         closePosition: (id) => guard(() => controller.closeOne(id))(),
         closePart: (size, id) => guard(() => controller.closePart(size, id))(),
-        reverse: (id) => guard(() => controller.reverse(id))(),
+        reverse: (id) => guard(() => { rules.guardReverse(id); controller.reverse(id); })(),
         breakEven: (id) => guard(() => controller.breakEven(id))(),
         protect: (levels, id) => guard(() => controller.protect(levels, id))(),
         setTrailing: (distance, id) => guard(() => controller.setTrailing(distance, {}, id))(),
         cancelOrder: (id) => guard(() => controller.cancelOrder(id))(),
         cancelAll: () => guard(() => controller.cancelAll())(),
         flatten: () => guard(() => controller.flatten())(),
-    });
+    }, { limits: { columns: rules.prop.columns, action: rules.prop.action } });
 
     const paint = (): void => {
+        // Read once per repaint: the figures, the refusal and the enforcement all want the same answer.
+        rules.prop.read();
         strip?.update(controller.account());
-        dock.render(controller.book());
+        dock.render(controller.book(), { stats: historyStats(rules.history(), controller.broker.balance) });
         // The ticket sizes against equity and the last price, so it moves with every bar too.
         sidebar.refresh();
         quick?.refresh();
+        // After everything has repainted, so what is about to be closed was on screen first.
+        rules.prop.enforce();
     };
     controller.onAccountChange = paint;
     paint();
+
+    return () => {
+        controller.onAccountChange = null;
+        quick?.destroy();
+        strip?.destroy();
+        strip?.el.remove();
+        dock.el.remove();
+    };
 }
 
 /**
@@ -481,20 +629,28 @@ function keepToFewCharts(ws: VelaWorkspace, notify: (message: string, kind: 'inf
 
 /** Start a fresh replay at `startTime`, on the default timeframe. `theme` is the palette
  *  the app is currently wearing — a session is built in it rather than corrected into it. */
-export async function startReplay(container: HTMLElement, cfg: ReplaySetup, theme: VelaTheme): Promise<MountedReplay> {
+export async function startReplay(
+    container: HTMLElement,
+    cfg: ReplaySetup,
+    theme: VelaTheme,
+    onLeave: LeaveHandler,
+): Promise<MountedReplay> {
     const timeframe = cfg.ticks ? TICK_TIMEFRAME : DEFAULT_TIMEFRAME;
+    // Refused before anything is mounted: an account the engine would reject is not a session.
+    const account = accountOptions(cfg.account ?? SPOT_ACCOUNT);
     const { bars } = await loadReplayWindow(cfg.symbol, timeframe, cfg.startTime);
     return mount(
         container,
         { symbol: cfg.symbol, timeframe, clock: cfg.startTime, bars },
         (provider, window_, startIndex, { rechart, notify }) => new ReplayController({
-            provider, bars: window_, startIndex, balance: cfg.balance,
+            provider, bars: window_, startIndex, balance: cfg.balance, name: cfg.name,
+            ...account,
             symbol: cfg.symbol, timeframe, rechart,
             ticks: cfg.ticks ? new TickFeed(cfg.ticks) : null,
-            onPlayStateChange: () => syncControls(),
             onNotice: notify,
         }),
         theme,
+        onLeave,
     );
 }
 
@@ -507,7 +663,12 @@ export async function startReplay(container: HTMLElement, cfg: ReplaySetup, them
  * It comes back on the timeframe it was put down on, including the bar it was
  * standing inside if the clock had stopped part-way through one.
  */
-export async function resumeReplay(container: HTMLElement, sessionId: string, theme: VelaTheme): Promise<MountedReplay> {
+export async function resumeReplay(
+    container: HTMLElement,
+    sessionId: string,
+    theme: VelaTheme,
+    onLeave: LeaveHandler,
+): Promise<MountedReplay> {
     const record = await window.midori.replay.loadSession(sessionId);
     if (!record) throw new Error(`No stored replay session ${sessionId}.`);
 
@@ -520,13 +681,15 @@ export async function resumeReplay(container: HTMLElement, sessionId: string, th
             symbol: record.symbol, timeframe: record.timeframe,
             restoreFrom: record.session,
             restoredSessionId: record.id,
+            name: record.name,
+            shots: record.shots ?? [],
             // What lets a session picked up today still go back to a candle from yesterday.
             journal: record.journal ?? null,
             ticks: record.ticks ? new TickFeed(record.ticks) : null,
             rechart,
-            onPlayStateChange: () => syncControls(),
             onNotice: notify,
         }),
         theme,
+        onLeave,
     );
 }
