@@ -222,6 +222,14 @@ Vela's — the charting library Midorii is built on and forked from.
 
 ### Fixed
 
+- **The top bar fits a 1440 px window.** With a paper or broker account showing, the account
+  figures pushed the window buttons 21 px past the edge, which cut off the close button and added
+  a horizontal scroll bar. The figures now tighten up earlier.
+
+- **Errors say what went wrong, not how Electron says it.** A failure from the background, such
+  as a refused request in the Trading Bot tab, used to begin with "Error invoking remote method"
+  and the name of an internal channel. Messages now show only what the app actually reported.
+
 - **A replay on an index future now books real money.** Every replay session was charged a
   crypto account's fees and counted one point of price as one dollar, so a trade on a futures
   contract showed a fraction of what it made or lost, and risk-based sizing sized it far too
