@@ -40,7 +40,7 @@ Each layer ships with a **bundled default backend** that you can replace. One nu
 
 The documentation is grouped by what you are trying to do.
 
-- **Midorii desktop app** — run [offline strategy searches](user/offline-search.md) on saved market history, or [control research through MCP](user/mcp.md).
+- **Midorii desktop app** — [work in the app](user/desktop-app.md) (command palette, watchlist, layouts, alerts), run [offline strategy searches](user/offline-search.md) on saved market history, or [control research through MCP](user/mcp.md).
 
 - **User** — get a chart rendering and drive it from your app: [Quickstart](user/quickstart.md), [The workspace](user/workspace.md) (single chart or a multi-chart grid), [Options](user/options.md), [API reference](user/api-reference.md), [Drawing tools](user/drawing-tools.md), [Renderer features](user/renderer-features.md), [Data providers](user/data-providers.md), [Scripting engines](user/scripting-engines.md), [Examples](user/examples.md), [FAQ](user/faq.md).
 - **Architecture** — understand the core, the three layers, the neutral model, and how data flows: [Overview](architecture/overview.md), [Data flow](architecture/data-flow.md), and the [decision records](architecture/adr/README.md).
