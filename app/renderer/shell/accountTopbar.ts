@@ -158,7 +158,7 @@ const CSS = `
 
 /* A narrow window drops figures from the left, the least urgent news first. Whichever one
    is left leading loses its rule — a hidden neighbour still matches the sibling selector. */
-@media (max-width: 1430px) {
+@media (max-width: 1500px) {
     .midorii-account-topbar { gap: 5px; margin-right: 6px; }
     .midorii-account-picker { width: 160px; padding-left: 8px; }
     .midorii-account-metric { min-width: 78px; padding-inline: 8px; }
