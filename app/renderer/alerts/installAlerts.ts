@@ -3,11 +3,21 @@ import type { IndicatorHandle } from '../../../src';
 import type { VelaWorkspace } from '../../../src/workspace';
 import { forEachCell } from '../shell/eachCell';
 import { AlertDialog } from './AlertDialog';
+import { AlertHistoryStore } from './AlertHistoryStore';
+import { AlertListStore } from './AlertListStore';
+import { PercentAlertDialog } from './PercentAlertDialog';
+import { PercentAlertEngine } from './PercentAlertEngine';
+import { sanitizePercentAlerts, type PercentAlert } from './percentAlertModel';
+import { TimeAlertDialog } from './TimeAlertDialog';
+import { TimeAlertEngine } from './TimeAlertEngine';
+import { formatDue, sanitizeTimeAlerts, type TimeAlert } from './timeAlertModel';
+import { newEntry, type HistoryKind } from './alertHistoryModel';
 import { AlertEngine } from './AlertEngine';
 import { IndicatorAlertDialog } from './IndicatorAlertDialog';
 import { IndicatorAlertEngine } from './IndicatorAlertEngine';
 import { IndicatorAlertStore } from './IndicatorAlertStore';
 import { describeAlert } from './indicatorAlertModel';
+import { describePercent } from './percentAlertModel';
 import { playAlertSound } from './alertSound';
 import { AlertStore } from './AlertStore';
 import { ALERT_INDICATOR_TYPE, alertIndicatorInputs, readAlertLineId, registerAlertIndicator } from './alertIndicator';
@@ -46,7 +56,18 @@ export function installAlerts(workspace: VelaWorkspace, providers: Record<string
     const reportError = (err: unknown): void => workspace.toast(err instanceof Error ? err.message : String(err), 'error');
     const indicatorStore = new IndicatorAlertStore();
     const indicatorDialog = new IndicatorAlertDialog(workspace.root, indicatorStore, reportError);
-    registerAlertsPanel(store, dialog, { store: indicatorStore, dialog: indicatorDialog, canWatch: hasStream });
+    const history = new AlertHistoryStore();
+    const percentStore = new AlertListStore<PercentAlert>('midorii-percent-alerts', sanitizePercentAlerts);
+    const percentDialog = new PercentAlertDialog(workspace.root, percentStore, reportError);
+    const timeStore = new AlertListStore<TimeAlert>('midorii-time-alerts', sanitizeTimeAlerts);
+    const timeDialog = new TimeAlertDialog(workspace.root, timeStore, reportError);
+    registerAlertsPanel(store, dialog, { store: indicatorStore, dialog: indicatorDialog, canWatch: hasStream }, history, {
+        percent: { store: percentStore, dialog: percentDialog },
+        time: { store: timeStore, dialog: timeDialog },
+    });
+    const record = (kind: HistoryKind, symbol: string, title: string, body: string): void => {
+        history.add(newEntry(kind, symbol, title, body, Date.now()));
+    };
 
     const offCursor = installCursorPriceTracking();
     workspace.refreshActions(); // mount the just-registered cursor-price attachment now
@@ -110,6 +131,7 @@ export function installAlerts(workspace: VelaWorkspace, providers: Record<string
 
     const engine = new AlertEngine(store, providers, (alert, price) => {
         const body = alert.message || `Crossed ${alert.price} (now ${price})`;
+        record('price', alert.symbol, `Price alert \u2014 ${tickerOf(alert.symbol)}`, body);
         playAlertSound();
         try {
             const n = new Notification(`Price alert — ${tickerOf(alert.symbol)}`, { body });
@@ -135,11 +157,36 @@ export function installAlerts(workspace: VelaWorkspace, providers: Record<string
         providers,
         (alert, r) => {
             const shown = r.value == null ? '' : ` (now ${Number(r.value.toFixed(4))})`;
-            notify(`Indicator alert \u2014 ${tickerOf(alert.symbol)}`, alert.message || `${describeAlert(alert)}${shown}`);
+            const title = `Indicator alert \u2014 ${tickerOf(alert.symbol)}`;
+            const body = alert.message || `${describeAlert(alert)}${shown}`;
+            record('indicator', alert.symbol, title, body);
+            notify(title, body);
         },
         (alert, err) => reportError(new Error(`Indicator alert on ${tickerOf(alert.symbol)} cannot be watched: ${err instanceof Error ? err.message : String(err)}`)),
     );
     indicatorEngine.start();
+
+    const percentEngine = new PercentAlertEngine(
+        percentStore,
+        providers,
+        (alert, price, move) => {
+            const title = `Percent alert \u2014 ${tickerOf(alert.symbol)}`;
+            const body = alert.message || `${describePercent(alert)}: now ${price} (${move >= 0 ? '+' : ''}${move.toFixed(2)}%)`;
+            record('percent', alert.symbol, title, body);
+            notify(title, body);
+        },
+        (alert, err) => reportError(new Error(`Percent alert on ${tickerOf(alert.symbol)} cannot be watched: ${err instanceof Error ? err.message : String(err)}`)),
+    );
+    percentEngine.start();
+
+    const timeEngine = new TimeAlertEngine(timeStore, (alert, lateMs) => {
+        // A reminder that came due while the app was closed is told as missed.
+        const missed = lateMs > 60_000 ? ` (was due ${formatDue(alert.at)})` : '';
+        const body = `${alert.message || 'Reminder'}${missed}`;
+        record('time', '', 'Time alert', body);
+        notify('Time alert', body);
+    });
+    timeEngine.start();
 
     registerWidgetAction({
         id: 'midorii.add-indicator-alert',

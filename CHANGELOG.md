@@ -168,6 +168,13 @@ Vela's — the charting library Midorii is built on and forked from.
   the standard studies, adjust its settings, choose the timeframe and whether it should fire
   once or every time. Indicator alerts are watched in the background on their own market and
   timeframe, whatever the chart shows, and each one lists in the panel with a switch to pause it.
+- **Get alerts for a move or a moment, and look back at what fired.** Under Percent alerts, press
+  plus to be told when a price has moved by a share, such as 2% up, down or either way, measured
+  from the first price seen once the alert is on; a repeating alert then measures its next move
+  from where it fired. Under Time alerts, press plus for a reminder in a span (`15m`, `1h30m`,
+  `2d`) or at a clock time (`14:30`); a reminder that came due while the app was closed shows up
+  at the next start, marked as missed. Every alert that fires, price, indicator, percent or time,
+  is also listed under History in the Alerts panel, with when it fired, until you clear it.
 - **Keep the Watchlist and the Alerts side by side.** The two panels no longer close each other:
   open both and they sit next to each other, with the chart making room. Which of them is open
   is remembered, like the widths you drag.
