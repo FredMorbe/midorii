@@ -48,6 +48,8 @@ export const SESSION_OFF = '#9ca3af';
 /** Default color of a plain line/area series — a softer blue than {@link ACCENT}, which is
  *  reserved for interactive chrome. */
 export const SERIES_LINE = '#3b82f6';
+/** The line of a second market laid over or set against the chart's own (compare, spread): warm, so it reads apart from the blue study lines. */
+export const COMPARE_LINE = '#ff9800';
 
 /** Crosshair ink: a cool gray that stays legible over both candles and empty surface. */
 export const CROSSHAIR = '#9aa0ad';

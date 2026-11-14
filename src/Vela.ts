@@ -25,6 +25,7 @@ import { registerVolume } from './core/native-indicators/volume';
 import { registerVpvr } from './core/native-indicators/vpvr';
 import { registerFvg } from './core/native-indicators/fvg';
 import { registerRange } from './core/native-indicators/range';
+import { registerCompare } from './core/native-indicators/compare';
 import { registerPressureChannels } from './core/native-indicators/pressure-channels';
 import { registerVolumeSentimentChannels } from './core/native-indicators/volume-sentiment-channels';
 import { registerStopHunt } from './core/native-indicators/stophunt';
@@ -77,6 +78,7 @@ export class Vela {
         registerVpvr();
         registerFvg();
         registerRange();
+        registerCompare();
         registerPressureChannels();
         registerVolumeSentimentChannels();
         registerStopHunt();
