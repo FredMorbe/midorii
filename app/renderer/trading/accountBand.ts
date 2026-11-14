@@ -27,10 +27,11 @@ const STYLE_ID = 'midorii-band';
 const CSS = `
 .midorii-band {
     position: absolute;
-    top: calc(var(--vela-price-pane-top, 0px) + 10px);
+    top: calc(var(--vela-price-pane-top, 0px) + 10px + var(--midorii-card-drop, 0px));
     right: calc(var(--vela-scale-gutter, 0px) + 10px);
     z-index: 5;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--vela-space-3);
     padding: 7px 10px 8px 12px;
@@ -74,7 +75,7 @@ const CSS = `
     font-weight: 600;
 }
 
-.midorii-band-cols { display: flex; align-items: center; gap: var(--vela-space-3); }
+.midorii-band-cols { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vela-space-3); }
 .midorii-band-col { display: flex; flex-direction: column; gap: 1px; min-width: 62px; }
 .midorii-band-col[hidden] { display: none; }
 .midorii-band-label {

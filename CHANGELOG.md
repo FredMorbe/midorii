@@ -175,6 +175,7 @@ Vela's — the charting library Midorii is built on and forked from.
   `2d`) or at a clock time (`14:30`); a reminder that came due while the app was closed shows up
   at the next start, marked as missed. Every alert that fires, price, indicator, percent or time,
   is also listed under History in the Alerts panel, with when it fired, until you clear it.
+  Click an entry to show its market on the chart.
 - **Stop a repeating alert from firing again and again.** A price that wobbles around a level
   used to notify on every crossing, seconds apart. Price, indicator and percent alerts that
   repeat now take a pause after firing, one minute unless you choose otherwise (up to an hour,
@@ -240,6 +241,13 @@ Vela's — the charting library Midorii is built on and forked from.
 - **The top bar fits a 1440 px window.** With a paper or broker account showing, the account
   figures pushed the window buttons 21 px past the edge, which cut off the close button and added
   a horizontal scroll bar. The figures now tighten up earlier.
+
+- **The account card and the order panel stay off the chart's header.** On a chart narrower than
+  the two together, such as one of two in a grid or one with a side panel open, the card used to
+  lie over the symbol and prices at the top and spill past the chart's edge, so only its buttons
+  were left. The card now wraps to fit the chart and sits under the header and legend, and the
+  order panel is put away on a chart too narrow for its controls; the trade panel on the right
+  places the same orders.
 
 - **Errors say what went wrong, not how Electron says it.** A failure from the background, such
   as a refused request in the Trading Bot tab, used to begin with "Error invoking remote method"

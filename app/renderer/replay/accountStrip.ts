@@ -33,7 +33,7 @@ const STYLE_ID = 'midorii-account';
 const CSS = `
 .midorii-account {
     position: absolute;
-    top: calc(var(--vela-price-pane-top, 0px) + 10px);
+    top: calc(var(--vela-price-pane-top, 0px) + 10px + var(--midorii-card-drop, 0px));
     /* The last term is the room the restore button takes when it is on screen — see
        overlayCards.ts. Zero the rest of the time, and ignored once the card is dragged. */
     right: calc(var(--vela-scale-gutter, 0px) + 10px + var(--midorii-overlay-inset, 0px));

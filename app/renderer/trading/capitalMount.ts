@@ -60,7 +60,7 @@ const CSS = `
    the difference between knowing and assuming. */
 .midorii-live-mark {
     position: absolute;
-    top: calc(var(--vela-price-pane-top, 0px) + 10px);
+    top: calc(var(--vela-price-pane-top, 0px) + 10px + var(--midorii-card-drop, 0px));
     right: calc(var(--vela-scale-gutter, 0px) + 10px + var(--midorii-overlay-inset, 0px));
     z-index: 5;
     /* The height of the buttons it stands beside, so the words sit on their centre line

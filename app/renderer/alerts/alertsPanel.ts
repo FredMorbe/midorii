@@ -135,7 +135,7 @@ function listRow<T extends { id: string; enabled: boolean; createdAt: number }>(
     return el;
 }
 
-function historyRow(entry: HistoryEntry, now: number): HTMLElement {
+function historyRow(entry: HistoryEntry, now: number, open: (symbol: string) => void): HTMLElement {
     const el = document.createElement('div');
     el.style.cssText = 'display:flex;flex-direction:column;gap:2px;padding:6px 12px;border-bottom:1px solid var(--vela-border);';
     const main = document.createElement('div');
@@ -152,6 +152,11 @@ function historyRow(entry: HistoryEntry, now: number): HTMLElement {
     body.style.cssText = 'font-size:11px;color:var(--vela-fg-muted);overflow-wrap:anywhere;';
     body.textContent = entry.body;
     el.append(main, body);
+    if (entry.symbol) {
+        el.style.cursor = 'pointer';
+        el.title = `Show ${symbolTicker(entry.symbol)} on the chart`;
+        el.addEventListener('click', () => open(entry.symbol));
+    }
     return el;
 }
 
@@ -290,10 +295,17 @@ export function registerAlertsPanel(
                 )));
                 time.none.hidden = alerts.length > 0;
             };
+            const showMarket = (symbol: string): void => {
+                try {
+                    ctx.setSymbol(symbol);
+                } catch (err) {
+                    ctx.toast(err instanceof Error ? err.message : String(err), 'error');
+                }
+            };
             const renderHistory = (): void => {
                 const entries = history.list();
                 const now = Date.now();
-                historyList.replaceChildren(...entries.map((e) => historyRow(e, now)));
+                historyList.replaceChildren(...entries.map((e) => historyRow(e, now, showMarket)));
                 historyEmpty.hidden = entries.length > 0;
                 clear.hidden = entries.length === 0;
             };

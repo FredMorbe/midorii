@@ -78,6 +78,10 @@ const CSS = `
    off would otherwise stay on screen. This is what actually puts one away. */
 .midorii-card[hidden] { display: none !important; }
 .midorii-card { cursor: move; }
+/* Never wider than the plot it sits on. In a grid, or beside a panel, a chart can be narrower
+   than a card is by itself, and a card that overflows to the left is cut off by the chart: what
+   stays is a row of buttons without the figures they belong to. */
+.midorii-card { box-sizing: border-box; max-width: calc(100% - var(--vela-scale-gutter, 0px) - 20px); }
 .midorii-card[data-dragging] { cursor: grabbing; }
 
 /* On the corner rather than inside it: every one of these cards is packed to its padding,
@@ -289,6 +293,58 @@ export function clampPlacement(
     };
 }
 
+/** The room the cards in the default corner leave the chart's own header. */
+const DROP_VAR = '--midorii-card-drop';
+/** What stays between the header and a card slid under it. */
+const DROP_GAP = 6;
+/** The chart's legend on the top pane: what the Volume line and each indicator's values sit in. */
+const LEGEND = '[data-vela-pane-at-top]';
+
+/**
+ * Slide the cards in the default corner under the chart's header when the two would overlap,
+ * and answer which elements that depends on, so the caller can follow their size.
+ *
+ * The header is the status line and the legend under it. Side by side with the cards they never
+ * meet on a wide chart: the header is on the left and the cards on the right. A grid cell, or a
+ * chart with a panel beside it, is narrower than both together, and a card laid over them hides
+ * the symbol and the prices it exists to sit beside. The drop is one number on the cell, so
+ * every card that anchors to the corner follows it; a card somebody dragged holds its own
+ * pixels and neither moves nor counts.
+ */
+export function clearStatusLine(cell: HTMLElement): HTMLElement[] {
+    cell.style.setProperty(DROP_VAR, '0px');
+    const line = cell.querySelector<HTMLElement>(':scope > .vela-statusline');
+    const legends = [...cell.querySelectorAll<HTMLElement>(LEGEND)];
+    const depends = [...(line ? [line] : []), ...legends];
+
+    // The box the header's own text fills: a legend element spans the pane, its text does not.
+    let box: { left: number; right: number; bottom: number } | null = null;
+    const take = (r: DOMRect): void => {
+        if (r.width === 0 || r.height === 0) return;
+        box = box
+            ? { left: Math.min(box.left, r.left), right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom) }
+            : { left: r.left, right: r.right, bottom: r.bottom };
+    };
+    if (line) take(line.getBoundingClientRect());
+    for (const legend of legends) {
+        for (const leaf of legend.querySelectorAll<HTMLElement>('*')) {
+            if (leaf.children.length === 0 && leaf.textContent?.trim()) take(leaf.getBoundingClientRect());
+        }
+    }
+    if (!box) return depends;
+    const { left, right, bottom } = box as { left: number; right: number; bottom: number };
+
+    let drop = 0;
+    for (const card of cell.querySelectorAll<HTMLElement>(':scope > .midorii-card:not([hidden])')) {
+        if (card.style.left) continue;
+        const r = card.getBoundingClientRect();
+        const meets = r.left < right + DROP_GAP && r.right > left && r.top < bottom;
+        if (meets) drop = Math.max(drop, bottom + DROP_GAP - r.top);
+    }
+    if (drop > 0) cell.style.setProperty(DROP_VAR, `${Math.ceil(drop)}px`);
+    return depends;
+}
+
 export interface OverlayCardOptions {
     id: OverlayCardId;
     /**
@@ -388,8 +444,20 @@ export function makeOverlayCard(cell: HTMLElement, el: HTMLElement, opts: Overla
         );
     };
 
+    /* The header fits itself to the room it has, after the cell has changed shape and without the
+     * cell changing again, and the legend grows with every study. Their size is a reason to
+     * place the cards too. */
+    let watched = new Set<HTMLElement>();
+    function watchHeader(next: HTMLElement[]): void {
+        const now = new Set(next);
+        for (const gone of watched) if (!now.has(gone)) observer?.unobserve(gone);
+        for (const added of now) if (!watched.has(added)) observer?.observe(added);
+        watched = now;
+    }
+
     function reflow(): void {
         if (el.hidden) return; // nothing measurable, and nothing on screen to move
+        watchHeader(clearStatusLine(cell));
         const kept = held();
         if (kept) show(kept);
         else opts.place?.();

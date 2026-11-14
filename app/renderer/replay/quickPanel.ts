@@ -41,6 +41,19 @@ const CSS = `
     box-shadow: var(--vela-shadow);
     user-select: none;
 }
+/* As wide as its controls want, but never wider than the plot. It keeps the room it leaves
+   the corner buttons while the plot has any to spare, and takes it back when the plot has not. */
+.midorii-quick.midorii-card {
+    --midorii-quick-width: min(336px, calc(100% - var(--vela-scale-gutter, 0px) - 20px));
+    width: var(--midorii-quick-width);
+    right: min(
+        calc(var(--vela-scale-gutter, 0px) + 10px + var(--midorii-overlay-inset, 0px)),
+        calc(100% - var(--midorii-quick-width) - 10px)
+    );
+}
+/* A chart too narrow for the controls to fit puts the panel away; the trade panel beside the
+   chart places the same orders. */
+.midorii-quick[data-cramped] { display: none; }
 .midorii-quick-row { display: flex; align-items: center; gap: 6px; }
 
 .midorii-quick-side {
@@ -127,8 +140,10 @@ const CSS = `
 
 /** How far under the account card the panel sits. */
 const GAP = 8;
+/** The plot width, left of the price axis, that the size row needs: two buttons, two steppers and a box. */
+const MIN_PLOT = 230;
 /** Where it sits when there is no card to sit under — the card's own anchor. */
-const FALLBACK_TOP = 'calc(var(--vela-price-pane-top, 0px) + 10px)';
+const FALLBACK_TOP = 'calc(var(--vela-price-pane-top, 0px) + 10px + var(--midorii-card-drop, 0px))';
 
 export interface QuickPanelOptions {
     /** The last price the session is standing on. */
@@ -282,6 +297,9 @@ export function mountQuickPanel(cell: HTMLElement, opts: QuickPanelOptions): Qui
      * one that went away would leave the panel hanging where the old card used to end. */
     let watched: HTMLElement | null = null;
     const place = (): void => {
+        const gutter = parseFloat(cell.ownerDocument.defaultView?.getComputedStyle(cell).getPropertyValue('--vela-scale-gutter') ?? '') || 0;
+        if (cell.clientWidth - gutter - 20 < MIN_PLOT) el.dataset.cramped = '';
+        else delete el.dataset.cramped;
         const anchor = anchorOf();
         watch(anchor);
         // No card, or a card that is switched off: there is nothing to sit under, and the

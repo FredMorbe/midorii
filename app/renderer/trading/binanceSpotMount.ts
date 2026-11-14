@@ -20,7 +20,7 @@ const STYLE_ID = 'midorii-binance-spot';
 const CSS = `
 .midorii-binance-spot {
     position: absolute;
-    top: calc(var(--vela-price-pane-top, 0px) + 10px);
+    top: calc(var(--vela-price-pane-top, 0px) + 10px + var(--midorii-card-drop, 0px));
     right: calc(var(--vela-scale-gutter, 0px) + 10px);
     z-index: 5;
     display: flex; align-items: center; gap: 14px;
