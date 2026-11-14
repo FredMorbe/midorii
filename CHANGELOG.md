@@ -185,10 +185,6 @@ Vela's — the charting library Midorii is built on and forked from.
   builds it, even where the venue only offers a few fixed ones. The candles are built from the
   longest timeframe the venue has that divides yours, and the forming candle follows the live
   prices. Timeframes the venue serves itself are unchanged.
-- **Put a chart on any timeframe.** Type 7 for seven minutes or 3H for three hours and the chart
-  builds it, even where the venue only offers a few fixed ones. The candles are built from the
-  longest timeframe the venue has that divides yours, and the forming candle follows the live
-  prices. Timeframes the venue serves itself are unchanged.
 - **Compare two markets on one chart.** Add Compare symbol from the indicator list and pick a
   second market, from any venue the app reads: its line is laid over the candles and starts where
   the chart's own market is at the left edge of the screen, so two markets that move alike lie on
