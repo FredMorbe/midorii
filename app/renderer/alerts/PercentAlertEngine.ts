@@ -1,5 +1,6 @@
 import type { DataProvider } from '../../../src/plugin';
 import type { AlertListStore } from './AlertListStore';
+import { coolingDown } from './alertCooldown';
 import { moveReached, movePercent, type PercentAlert } from './percentAlertModel';
 import { symbolProvider, symbolTicker } from './alertTypes';
 
@@ -95,7 +96,7 @@ export class PercentAlertEngine {
                 this.store.update(alert.id, { reference: price });
                 continue;
             }
-            if (!moveReached(alert, price)) continue;
+            if (!moveReached(alert, price) || coolingDown(alert, this.now())) continue;
             const move = movePercent(alert.reference, price);
             this.store.update(alert.id, alert.once
                 ? { enabled: false, reference: null, lastTriggeredAt: this.now() }

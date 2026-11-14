@@ -1,3 +1,4 @@
+import { readCooldown } from './alertCooldown';
 import type { InputValue } from '../../../src/core/model/inputs';
 import type { IndicatorAgainst, IndicatorAlert, IndicatorCondition } from './indicatorAlertModel';
 
@@ -42,6 +43,7 @@ export function sanitizeIndicatorAlerts(raw: unknown): IndicatorAlert[] {
             against,
             message: typeof e.message === 'string' ? e.message : '',
             once: e.once !== false,
+            cooldownMs: readCooldown(e.cooldownMs),
             enabled: e.enabled !== false,
             createdAt: typeof e.createdAt === 'number' ? e.createdAt : 0,
             lastTriggeredAt: typeof e.lastTriggeredAt === 'number' ? e.lastTriggeredAt : null,

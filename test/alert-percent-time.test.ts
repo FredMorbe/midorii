@@ -151,7 +151,7 @@ describe('PercentAlertEngine', () => {
     });
 
     it('lets a repeating alert measure its next move from where it fired', () => {
-        const a = store.add(percentAlert({ percent: 2, once: false, direction: 'either' }));
+        const a = store.add(percentAlert({ percent: 2, once: false, cooldownMs: 0, direction: 'either' }));
         engine.start();
         feed.push(100);
         feed.push(102);

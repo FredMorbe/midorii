@@ -1,3 +1,4 @@
+import { DEFAULT_COOLDOWN_MS } from './alertCooldown';
 import { classicSpecs, type ClassicIndicatorSpec } from '../../../src/core/native-indicators/classics';
 import type { InputSchema, InputValue } from '../../../src/core/model/inputs';
 import type { OHLCV } from '../../../src/core/model/ohlcv';
@@ -26,6 +27,8 @@ export interface IndicatorAlert {
     against: IndicatorAgainst;
     message: string;
     once: boolean;
+    /** Pause after firing while the alert repeats (see alertCooldown.ts). Absent on alerts made before it existed. */
+    cooldownMs?: number;
     enabled: boolean;
     createdAt: number;
     lastTriggeredAt: number | null;
@@ -150,6 +153,7 @@ export function newIndicatorAlert(symbol: string, timeframe: string, spec: Class
         against: spec.overlay ? { kind: 'price' } : { kind: 'level', value: 70 },
         message: '',
         once: true,
+        cooldownMs: DEFAULT_COOLDOWN_MS,
         enabled: true,
         createdAt: Date.now(),
         lastTriggeredAt: null,

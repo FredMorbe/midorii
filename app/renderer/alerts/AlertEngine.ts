@@ -1,5 +1,6 @@
 import type { DataProvider } from '../../../src/plugin';
 import type { AlertStore } from './AlertStore';
+import { coolingDown } from './alertCooldown';
 import type { PriceAlert } from './alertTypes';
 import { symbolProvider, symbolTicker } from './alertTypes';
 
@@ -89,7 +90,7 @@ export class AlertEngine {
             const fired = alert.condition === 'crossing' ? (crossedUp || crossedDown)
                 : alert.condition === 'above' ? crossedUp
                 : crossedDown;
-            if (fired) this.trigger(alert, close);
+            if (fired && !coolingDown(alert, Date.now())) this.trigger(alert, close);
         }
     }
 

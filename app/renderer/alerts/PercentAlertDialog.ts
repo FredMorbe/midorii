@@ -1,4 +1,5 @@
 import { buildFieldControl, fieldGrid, fieldRow, type Dialog } from '../../../src/ui';
+import { pauseRow } from './alertCooldownRow';
 import { openAlertForm } from './alertFormDialog';
 import type { AlertListStore } from './AlertListStore';
 import { DIRECTION_OPTIONS, newPercentAlert, type PercentAlert, type PercentDirection } from './percentAlertModel';
@@ -69,7 +70,9 @@ export class PercentAlertDialog {
             }).el,
             stacked: true,
         }));
-        grid.appendChild(fieldRow({ label: 'Once', bool: true, toggle: { checked: draft.once, onChange: (v) => { draft.once = v; } } }));
+        const pause = pauseRow(draft.cooldownMs, draft.once, (ms) => { draft.cooldownMs = ms; });
+        grid.appendChild(fieldRow({ label: 'Once', bool: true, toggle: { checked: draft.once, onChange: (v) => { draft.once = v; pause.setOnce(v); } } }));
+        grid.appendChild(pause.row);
         grid.appendChild(fieldRow({ label: 'Enabled', bool: true, toggle: { checked: draft.enabled, onChange: (v) => { draft.enabled = v; } } }));
         holder.appendChild(grid);
 

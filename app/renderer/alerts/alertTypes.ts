@@ -1,3 +1,5 @@
+import { DEFAULT_COOLDOWN_MS } from './alertCooldown';
+
 /**
  * A price alert — set from the chart (right-click → Add Alert), watched against the
  * symbol's live feed regardless of what the chart happens to be showing, and shown as a
@@ -20,6 +22,8 @@ export interface PriceAlert {
     /** Disables itself once it fires. A repeating alert re-arms immediately. */
     once: boolean;
     enabled: boolean;
+    /** Pause after firing while the alert repeats (see alertCooldown.ts). Absent on alerts made before it existed. */
+    cooldownMs?: number;
     createdAt: number;
     lastTriggeredAt: number | null;
 }
@@ -37,6 +41,7 @@ export function newAlert(symbol: string, price: number): PriceAlert {
         label: '',
         message: '',
         once: true,
+        cooldownMs: DEFAULT_COOLDOWN_MS,
         enabled: true,
         createdAt: Date.now(),
         lastTriggeredAt: null,

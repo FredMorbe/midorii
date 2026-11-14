@@ -1,6 +1,7 @@
 import type { DataProvider } from '../../../src/plugin';
 import type { OHLCV } from '../../../src/core/model/ohlcv';
 import type { IndicatorAlertStore } from './IndicatorAlertStore';
+import { coolingDown } from './alertCooldown';
 import { crossed, reading, sideOf, type IndicatorAlert, type Reading } from './indicatorAlertModel';
 import { symbolProvider, symbolTicker } from './alertTypes';
 
@@ -176,7 +177,7 @@ export class IndicatorAlertEngine {
             // An edited alert starts over: its old side was measured against something else.
             const prev = before && before.signature === signature ? before.side : null;
             group.last.set(alert.id, { signature, side });
-            if (crossed(prev, side, alert.condition)) {
+            if (crossed(prev, side, alert.condition) && !coolingDown(alert, this.now())) {
                 this.store.update(alert.id, { enabled: !alert.once, lastTriggeredAt: this.now() });
                 this.onTrigger(alert, r);
             }

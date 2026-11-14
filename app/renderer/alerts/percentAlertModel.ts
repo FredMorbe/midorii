@@ -1,3 +1,5 @@
+import { DEFAULT_COOLDOWN_MS, readCooldown } from './alertCooldown';
+
 /**
  * A percent alert: the price moved by a given share from a reference price. Unlike a level
  * the reference is where the price WAS when the alert started watching, so it needs no
@@ -20,6 +22,8 @@ export interface PercentAlert {
     reference: number | null;
     message: string;
     once: boolean;
+    /** Pause after firing while the alert repeats (see alertCooldown.ts). Absent on alerts made before it existed. */
+    cooldownMs?: number;
     enabled: boolean;
     createdAt: number;
     lastTriggeredAt: number | null;
@@ -64,6 +68,7 @@ export function newPercentAlert(symbol: string): PercentAlert {
         reference: null,
         message: '',
         once: true,
+        cooldownMs: DEFAULT_COOLDOWN_MS,
         enabled: true,
         createdAt: Date.now(),
         lastTriggeredAt: null,
@@ -91,6 +96,7 @@ export function sanitizePercentAlerts(raw: unknown): PercentAlert[] {
             reference: typeof e.reference === 'number' && e.reference > 0 && Number.isFinite(e.reference) ? e.reference : null,
             message: typeof e.message === 'string' ? e.message : '',
             once: e.once !== false,
+            cooldownMs: readCooldown(e.cooldownMs),
             enabled: e.enabled !== false,
             createdAt: typeof e.createdAt === 'number' ? e.createdAt : 0,
             lastTriggeredAt: typeof e.lastTriggeredAt === 'number' ? e.lastTriggeredAt : null,

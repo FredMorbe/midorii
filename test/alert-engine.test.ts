@@ -109,7 +109,7 @@ describe('AlertEngine crossing detection', () => {
 
     it('a repeating (non-"once") alert stays enabled and fires on every crossing', () => {
         const alert = store.add(newAlert('binance:BTCUSDT', 100));
-        store.update(alert.id, { once: false });
+        store.update(alert.id, { once: false, cooldownMs: 0 });
         engine.start();
         provider.push(90);
         provider.push(105); // cross #1 (up)

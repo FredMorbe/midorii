@@ -1,5 +1,6 @@
 import { Dialog, fieldGrid, fieldRow, buildFieldControl, type SelectOption } from '../../../src/ui';
 import type { IndicatorAlertStore } from './IndicatorAlertStore';
+import { pauseRow } from './alertCooldownRow';
 import {
     alertableSpecs, CONDITION_OPTIONS, editableInputs, newIndicatorAlert, plotsOf, specOf, withDefaults,
     type IndicatorAlert, type IndicatorCondition,
@@ -199,7 +200,9 @@ export class IndicatorAlertDialog {
                 }).el,
                 stacked: true,
             }));
-            grid.appendChild(fieldRow({ label: 'Once', bool: true, toggle: { checked: draft.once, onChange: (v) => { draft.once = v; } } }));
+            const pause = pauseRow(draft.cooldownMs, draft.once, (ms) => { draft.cooldownMs = ms; });
+            grid.appendChild(fieldRow({ label: 'Once', bool: true, toggle: { checked: draft.once, onChange: (v) => { draft.once = v; pause.setOnce(v); } } }));
+            grid.appendChild(pause.row);
             grid.appendChild(fieldRow({ label: 'Enabled', bool: true, toggle: { checked: draft.enabled, onChange: (v) => { draft.enabled = v; } } }));
             holder.replaceChildren(grid);
         };

@@ -175,6 +175,11 @@ Vela's — the charting library Midorii is built on and forked from.
   `2d`) or at a clock time (`14:30`); a reminder that came due while the app was closed shows up
   at the next start, marked as missed. Every alert that fires, price, indicator, percent or time,
   is also listed under History in the Alerts panel, with when it fired, until you clear it.
+- **Stop a repeating alert from firing again and again.** A price that wobbles around a level
+  used to notify on every crossing, seconds apart. Price, indicator and percent alerts that
+  repeat now take a pause after firing, one minute unless you choose otherwise (up to an hour,
+  or none), and the alert's popup shows it while Once is off. A crossing during the pause is not
+  told later. Alerts you made before keep firing as they did until you set a pause on them.
 - **Keep the Watchlist and the Alerts side by side.** The two panels no longer close each other:
   open both and they sit next to each other, with the chart making room. Which of them is open
   is remembered, like the widths you drag.

@@ -1,5 +1,6 @@
 import { Dialog, fieldGrid, fieldRow, buildFieldControl, type SelectOption } from '../../../src/ui';
 import type { AlertStore } from './AlertStore';
+import { pauseRow } from './alertCooldownRow';
 import { LABEL_MAX_LENGTH, type PriceAlert } from './alertTypes';
 
 const CONDITION_OPTIONS: readonly SelectOption[] = [
@@ -79,11 +80,13 @@ export class AlertDialog {
         });
         grid.appendChild(fieldRow({ label: 'Message', control: messageCtrl.el, stacked: true }));
 
+        const pause = pauseRow(alert.cooldownMs, alert.once, (ms) => this.store.update(alertId, { cooldownMs: ms }));
         grid.appendChild(fieldRow({
             label: 'Once',
             bool: true,
-            toggle: { checked: alert.once, onChange: (v) => this.store.update(alertId, { once: v }) },
+            toggle: { checked: alert.once, onChange: (v) => { this.store.update(alertId, { once: v }); pause.setOnce(v); } },
         }));
+        grid.appendChild(pause.row);
         grid.appendChild(fieldRow({
             label: 'Enabled',
             bool: true,
