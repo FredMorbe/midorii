@@ -343,24 +343,41 @@ function rowToBar(row) {
   };
 }
 
+/** Length of one candle per resolution — what a window of `max` candles spans. */
+const RESOLUTION_MS = {
+  MINUTE: 60_000,
+  MINUTE_5: 5 * 60_000,
+  MINUTE_15: 15 * 60_000,
+  MINUTE_30: 30 * 60_000,
+  HOUR: 3_600_000,
+  HOUR_4: 4 * 3_600_000,
+  DAY: 86_400_000,
+  WEEK: 7 * 86_400_000,
+};
+const PAGE_BARS = 1000;
+
 /** Historical bars for `epic`/`resolution`, paginating backward past the 1000-row
  *  cap when `limit` asks for more (mirrors the bundled providers' own pagination). */
 export async function capitalPrices(epic, resolution, { from, to, limit } = {}) {
   if (from != null) {
-    // Ranged fetch: page FORWARD from `from` to `to` (tail re-fetches, deep backfills).
-    const out = [];
-    let cursor = from;
+    /* Ranged fetch: walked FORWARD from `from` to `to` in windows of at most one page of
+     * candles. The venue refuses a window holding more candles than `max` allows
+     * (error.invalid.max.daterange — ten days of 5-minute bars was refused outright), so the
+     * range is cut up front rather than sent whole and hoped for. A window whose edge candle
+     * the next one repeats costs nothing: rows are keyed by their time. A resolution this table
+     * does not know goes out as one window, as it always did. */
     const end = to ?? Date.now();
-    for (let guard = 0; cursor < end && guard < 500; guard++) {
-      const page = await pricesPage(epic, resolution, { from: cursor, to: end, max: 1000 });
-      if (page.length === 0) break;
-      out.push(...page);
-      const lastTime = Date.parse(`${page[page.length - 1].snapshotTimeUTC}Z`);
-      if (!(lastTime > cursor)) break; // no forward progress — stop rather than loop forever
-      cursor = lastTime + 1;
-      if (page.length < 1000) break;
+    const step = RESOLUTION_MS[resolution];
+    const reach = step ? (PAGE_BARS - 1) * step : Math.max(end - from, 0);
+    const rows = new Map();
+    let cursor = from;
+    for (let guard = Math.ceil(Math.max(end - from, 0) / Math.max(reach, 1)) + 2; cursor <= end && guard-- > 0; ) {
+      const windowEnd = Math.min(end, cursor + reach);
+      const page = await pricesPage(epic, resolution, { from: cursor, to: windowEnd, max: PAGE_BARS });
+      for (const row of page) rows.set(row.snapshotTimeUTC, row);
+      cursor = windowEnd + 1;
     }
-    return out.map(rowToBar);
+    return [...rows.values()].map(rowToBar);
   }
 
   // Unbounded: the most recent `limit` bars (default page size otherwise).
