@@ -187,6 +187,11 @@ Vela's — the charting library Midorii is built on and forked from.
 
 ### Changed
 
+- **The Strategies tab leads with the settings.** Pick a strategy and its settings are right
+  under the description, where you change them, instead of below a wall of rules. The rules,
+  meaning setup, entry, stop, target and size, sit below in a section you unfold when you want
+  to read them. It stays open or closed as you move between strategies.
+
 - **Capital.com bots require a safe account start.** Starting on live money always asks for
   confirmation. Bots require hedging mode, current account data, and durable ownership of
   their orders. A connection change or uncertain order outcome blocks further entries.

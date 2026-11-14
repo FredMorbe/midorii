@@ -82,6 +82,11 @@ ${overlayScrollbarCss('.midorii-strategies-body')}
 }
 .midorii-strategies-sub { margin: 0 0 12px; color: var(--vela-fg-muted); font-size: 12.5px; line-height: 1.55; }
 
+.midorii-strategies-fold > summary {
+    cursor: pointer; font-size: 13px; font-weight: 600; color: var(--vela-fg-bright);
+}
+.midorii-strategies-fold[open] > summary { margin-bottom: 10px; }
+
 .midorii-strategies-rules { margin: 0; }
 .midorii-strategies-rule {
     display: grid; grid-template-columns: 96px 1fr; gap: 10px;
@@ -144,6 +149,8 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
     /** The form's current values per strategy — the stored settings until they are edited. */
     const editing = new Map<string, StrategyParams>();
     let status: { text: string; error?: boolean } | null = null;
+    /** Whether the rules are unfolded. Kept across strategies and repaints, so reading them is not undone by a click on a field. */
+    let rulesOpen = false;
 
     function strategy(): StrategyInfo | undefined {
         return catalog.find((s) => s.id === selected);
@@ -257,7 +264,13 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
 
     /** Entry, stop, target, size — the four answers that make this a strategy. */
     function rulesCard(spec: StrategyInfo): HTMLElement {
-        const el = card();
+        const el = doc.createElement('details');
+        el.className = 'midorii-strategies-card midorii-strategies-fold';
+        el.open = rulesOpen;
+        el.addEventListener('toggle', () => { rulesOpen = el.open; });
+        const summary = doc.createElement('summary');
+        summary.textContent = 'Rules: setup, entry, stop, target and size';
+        el.appendChild(summary);
         const heading = doc.createElement('p');
         heading.className = 'midorii-strategies-sub';
         heading.textContent = 'What it does, in rules rather than in judgement. This is the whole '
@@ -332,8 +345,6 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
             inner.appendChild(reads);
         }
 
-        inner.appendChild(rulesCard(spec));
-
         const values = valuesFor(spec.id);
         const risk = spec.params.filter((p) => RISK_PARAM_KEYS.includes(p.key));
         const own = spec.params.filter((p) => !RISK_PARAM_KEYS.includes(p.key));
@@ -390,6 +401,7 @@ export function mountStrategiesView(host: HTMLElement): StrategiesViewHandle {
             + 'result anybody can act on.';
         settings.appendChild(filed);
         inner.appendChild(settings);
+        inner.appendChild(rulesCard(spec));
     }
 
     function paint(): void {
