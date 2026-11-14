@@ -171,8 +171,13 @@ export interface SidePanelDescriptor {
     /** Float over the chart's right edge instead of docking beside it: the chart keeps its
      *  width and layout, and the panel covers its right-hand part (default false — a docked
      *  column that shrinks the chart). For panels wide enough that a column would crush
-     *  the plot. The dock stays exclusive either way. */
+     *  the plot. The dock stays exclusive either way unless the panel opts out. */
     overlay?: boolean;
+    /** Whether opening this panel closes the others, and opening another closes this one
+     *  (default true: the dock shows one panel at a time). A panel declared `false` stays
+     *  open beside whatever else is showing, and sits side by side with other `false` panels
+     *  as its own column. It never closes, and is never closed by, an exclusive panel. */
+    exclusive?: boolean;
     mount(ctx: WidgetContext, body: HTMLElement, header: SidePanelHeader): SidePanelHandle | void;
 }
 

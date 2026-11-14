@@ -1,7 +1,8 @@
 // The PANEL DOCK — the one owner of the shell's side-panel column. It holds the shell's own
 // panels (object tree, data window) and every contributed one (`registerSidePanel`) as equal
-// entries, enforces the single-open rule, projects the toggle buttons into the chrome, and
-// carries the dock's persistable state (which panel is open, the widths the user dragged).
+// entries, enforces the single-open rule among the panels that keep it, projects the toggle
+// buttons into the chrome, and carries the dock's persistable state (which panels are open, the
+// widths the user dragged).
 //
 // Both shells drive the same dock, so the exclusivity rule and the button wiring exist ONCE.
 // The chrome is reached through {@link PanelChrome} (the topbar implements it structurally) —
@@ -34,6 +35,8 @@ export interface BuiltInPanel {
     icon: string;
     order: number;
     panel: SidePanel;
+    /** Default true; see `SidePanelDescriptor.exclusive`. */
+    exclusive?: boolean;
     /** Rebind hook, called by {@link PanelDock.onChart}. */
     onChart?(chart: Vela): void;
 }
@@ -44,6 +47,8 @@ interface Entry {
     icon: string;
     order: number;
     panel: SidePanel;
+    /** Whether it takes part in the single-open rule. */
+    exclusive: boolean;
     onChart?: (chart: Vela) => void;
     /** Contributed entries are created (and destroyed) by the dock; built-ins by the shell. */
     contributed: boolean;
@@ -56,8 +61,8 @@ export class PanelDock {
     private readonly widths = new Map<string, number>();
     /** Floating panels the USER pinned as columns, by id — remembered for late registrations too. */
     private pinned = new Set<string>();
-    /** A restored `open` naming a panel that has not registered yet: honored when it docks. */
-    private pendingOpen: string | null = null;
+    /** Restored `open` ids naming panels that have not registered yet: honored when they dock. */
+    private readonly pendingOpen = new Set<string>();
     private chart: Vela | null = null;
 
     constructor(
@@ -67,7 +72,7 @@ export class PanelDock {
 
     /** Dock a panel the shell owns (created and destroyed by it). */
     addBuiltIn(entry: BuiltInPanel): void {
-        this.add({ ...entry, contributed: false });
+        this.add({ ...entry, exclusive: entry.exclusive !== false, contributed: false });
     }
 
     /**
@@ -79,7 +84,7 @@ export class PanelDock {
     refresh(): void {
         // A rebuild must not close the column under the user: a contributed panel that is open
         // (and still registered) is reopened once its replacement is docked.
-        const openBefore = this.openId;
+        const openBefore = this.openIds;
         for (const entry of [...this.entries]) if (entry.contributed) this.drop(entry);
         for (const desc of sidePanels()) {
             const panel = new SidePanel(this.host, desc.title, `vela-panel-${desc.id}`, {
@@ -95,6 +100,7 @@ export class PanelDock {
                 icon: desc.icon,
                 order: desc.order ?? DEFAULT_PANEL_ORDER,
                 panel,
+                exclusive: desc.exclusive !== false,
                 contributed: true,
             };
             // A contribution that throws on mount must not take the shell down with it: the
@@ -107,7 +113,7 @@ export class PanelDock {
             }
             this.add(entry);
         }
-        if (openBefore && !this.openId) this.toggle(openBefore, true);
+        for (const id of openBefore) if (!this.openIds.includes(id)) this.toggle(id, true);
         this.publish();
     }
 
@@ -125,9 +131,14 @@ export class PanelDock {
         this.entries.find((e) => e.id === id)?.panel.toggle(open);
     }
 
-    /** The open panel's id, or null when the column is closed. */
+    /** The first open panel's id, or null when the column is closed. */
     get openId(): string | null {
         return this.entries.find((e) => e.panel.open)?.id ?? null;
+    }
+
+    /** Every open panel's id, in dock order. */
+    get openIds(): string[] {
+        return this.entries.filter((e) => e.panel.open).map((e) => e.id);
     }
 
     /** The docked panels in dock order — what a non-topbar chrome (the mobile
@@ -139,8 +150,9 @@ export class PanelDock {
     /** The dock's persistable state, or null when there is nothing worth saving. */
     getState(): PanelsState | null {
         const out: PanelsState = {};
-        const open = this.openId;
+        const [open, ...also] = this.openIds;
         if (open) out.open = open;
+        if (also.length > 0) out.alsoOpen = also;
         if (this.widths.size > 0) out.widths = Object.fromEntries(this.widths);
         if (this.pinned.size > 0) out.pinned = [...this.pinned];
         return out.open || out.widths || out.pinned ? out : null;
@@ -148,7 +160,7 @@ export class PanelDock {
 
     /**
      * Restore a persisted dock state. Widths apply to any panel present, and are remembered for
-     * panels that register later; `open` opens that panel, and its absence closes the column —
+     * panels that register later; `open` and `alsoOpen` open those panels, and their absence closes the column —
      * a document that predates the dock has no `panels` field at all, so the shell never calls
      * this and the default (everything closed) stands. An `open` naming a panel that has not
      * registered yet is held until it docks (a plugin loaded after the restore), unless the user
@@ -165,8 +177,11 @@ export class PanelDock {
         }
         this.pinned = new Set(state.pinned ?? []);
         for (const entry of this.entries) entry.panel.setOverlay(!this.pinned.has(entry.id));
-        for (const entry of this.entries) entry.panel.toggle(entry.id === state.open);
-        this.pendingOpen = state.open && !this.entries.some((e) => e.id === state.open) ? state.open : null;
+        const wanted = new Set([...(state.open ? [state.open] : []), ...(state.alsoOpen ?? [])]);
+        for (const entry of this.entries) if (!wanted.has(entry.id)) entry.panel.toggle(false);
+        for (const entry of this.entries) if (wanted.has(entry.id)) entry.panel.toggle(true);
+        this.pendingOpen.clear();
+        for (const id of wanted) if (!this.entries.some((e) => e.id === id)) this.pendingOpen.add(id);
     }
 
     /** Drop the contributed panels (the shell destroys its own). */
@@ -183,8 +198,12 @@ export class PanelDock {
         if (this.pinned.has(entry.id)) entry.panel.setOverlay(false);
         entry.panel.onOpenChange = (open) => {
             if (open) {
-                for (const other of this.entries) if (other !== entry) other.panel.toggle(false);
-                this.pendingOpen = null; // the user chose a column; a stale restore must not steal it
+                if (entry.exclusive) {
+                    for (const other of this.entries) if (other !== entry && other.exclusive) other.panel.toggle(false);
+                    this.pendingOpen.clear(); // the user chose a column; a stale restore must not steal it
+                } else {
+                    this.pendingOpen.delete(entry.id);
+                }
             }
             this.deps.chrome.setPanelActive(entry.id, open);
             if (open) entry.handle?.onOpen?.();
@@ -199,7 +218,7 @@ export class PanelDock {
             else this.pinned.add(entry.id);
             this.deps.changed?.();
         };
-        if (this.pendingOpen === entry.id) entry.panel.toggle(true);
+        if (this.pendingOpen.has(entry.id)) entry.panel.toggle(true);
         if (!entry.contributed) this.publish();
     }
 

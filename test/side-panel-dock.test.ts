@@ -427,3 +427,83 @@ describe('sanitizeState — panels', () => {
         expect(sanitizeState(base)?.panels).toBeUndefined();
     });
 });
+
+describe('PanelDock — panels that opt out of the single-open rule', () => {
+    function mixed(): { dock: PanelDock; panels: Record<'a' | 'b' | 'n1' | 'n2', SidePanel>; active: Map<string, boolean> } {
+        const { root } = stubDoc();
+        const active = new Map<string, boolean>();
+        const d = new PanelDock(root as never, {
+            chrome: { setPanelButtons: () => {}, setPanelActive: (id, open) => void active.set(id, open) },
+            context: () => ctx,
+        });
+        const make = (id: string): SidePanel => new SidePanel(root as never, id, `x-${id}`);
+        const panels = { a: make('a'), b: make('b'), n1: make('n1'), n2: make('n2') };
+        d.addBuiltIn({ id: 'a', title: 'A', icon: 'ia', order: 10, panel: panels.a });
+        d.addBuiltIn({ id: 'b', title: 'B', icon: 'ib', order: 20, panel: panels.b });
+        d.addBuiltIn({ id: 'n1', title: 'N1', icon: 'i1', order: 30, panel: panels.n1, exclusive: false });
+        d.addBuiltIn({ id: 'n2', title: 'N2', icon: 'i2', order: 40, panel: panels.n2, exclusive: false });
+        return { dock: d, panels, active };
+    }
+
+    it('two panels that opted out stay open side by side', () => {
+        const { dock: d, panels } = mixed();
+        d.toggle('n1');
+        d.toggle('n2');
+        expect(panels.n1.open).toBe(true);
+        expect(panels.n2.open).toBe(true);
+        expect(d.openIds).toEqual(['n1', 'n2']);
+    });
+
+    it('an exclusive panel neither closes them nor is closed by them', () => {
+        const { dock: d, panels } = mixed();
+        d.toggle('n1');
+        d.toggle('a');
+        expect(panels.n1.open).toBe(true);
+        expect(panels.a.open).toBe(true);
+        d.toggle('b');
+        expect(panels.a.open).toBe(false);
+        expect(panels.b.open).toBe(true);
+        expect(panels.n1.open).toBe(true);
+    });
+
+    it('persists every open panel and restores them all', () => {
+        const first = mixed();
+        first.dock.toggle('a');
+        first.dock.toggle('n1');
+        first.dock.toggle('n2');
+        const state = first.dock.getState();
+        expect(state).toEqual({ open: 'a', alsoOpen: ['n1', 'n2'] });
+
+        const second = mixed();
+        second.dock.applyState(state ?? undefined);
+        expect(second.dock.openIds).toEqual(['a', 'n1', 'n2']);
+        second.dock.applyState({ open: 'n2' });
+        expect(second.dock.openIds).toEqual(['n2']);
+    });
+
+    it('holds a restored panel that registers later, one of several', () => {
+        const { root } = stubDoc();
+        const d = new PanelDock(root as never, {
+            chrome: { setPanelButtons: () => {}, setPanelActive: () => {} },
+            context: () => ctx,
+        });
+        d.applyState({ open: 'late1', alsoOpen: ['late2'] });
+        const p1 = new SidePanel(root as never, 'L1', 'x-l1');
+        const p2 = new SidePanel(root as never, 'L2', 'x-l2');
+        d.addBuiltIn({ id: 'late1', title: 'L1', icon: 'i', order: 1, panel: p1, exclusive: false });
+        d.addBuiltIn({ id: 'late2', title: 'L2', icon: 'i', order: 2, panel: p2, exclusive: false });
+        expect(p1.open).toBe(true);
+        expect(p2.open).toBe(true);
+    });
+});
+
+describe('sanitizeState — alsoOpen', () => {
+    it('keeps the extra open panels, without duplicates or the primary one', () => {
+        const state = sanitizeState({ version: 1, layout: '1', charts: [], panels: { open: 'a', alsoOpen: ['b', 'b', 'a', 7, ''] } });
+        expect(state?.panels).toEqual({ open: 'a', alsoOpen: ['b'] });
+    });
+    it('a document without it reads as before', () => {
+        const state = sanitizeState({ version: 1, layout: '1', charts: [], panels: { open: 'a' } });
+        expect(state?.panels).toEqual({ open: 'a' });
+    });
+});

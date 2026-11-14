@@ -148,6 +148,7 @@ export function registerWatchlistPanel(opts: WatchlistPanelOptions): () => void 
         order: 49,
         width: 300,
         resizable: true,
+        exclusive: false,
         minWidth: 240,
         maxWidth: 520,
         mount(ctx, body, header): SidePanelHandle {

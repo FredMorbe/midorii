@@ -105,6 +105,7 @@ export function registerAlertsPanel(
         icon: 'bands',
         order: 50,
         width: 260,
+        exclusive: false,
         mount(ctx, body): SidePanelHandle {
             const list = document.createElement('div');
             list.style.cssText = 'display:flex;flex-direction:column;overflow-y:auto;';

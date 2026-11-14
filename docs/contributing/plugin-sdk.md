@@ -205,7 +205,7 @@ registerWidgetAction({
     run: (ctx) => {
         // ctx.chart (the CURRENT inner chart) · ctx.symbol / timeframe / priceStyle
         // ctx.setSymbol / setTimeframe / setPriceStyle / openSymbolSearch(query?)
-        // ctx.togglePanel(id, open?) — open/close a docked side panel (dock stays exclusive)
+        // ctx.togglePanel(id, open?) — open/close a docked side panel (the dock stays exclusive unless a panel opts out)
         // ctx.addIndicator({ name, script, language? }) — add a script indicator THROUGH
         //   the shell: recorded in the unified undo/redo timeline and the indicator count
         // ctx.addNativeIndicator(type) — same, for native (core-computed) indicators
@@ -573,7 +573,7 @@ registerLegendCallout({
 
 A **side panel** is a docked column on the chart's right edge — the object tree and the data
 window are the two built-in ones, and a contributed panel joins them as an equal: same header
-and close button, same single-open dock, its own toggle button in the topbar's panel group.
+and close button, the same dock (one panel at a time unless it opts out, see below), its own toggle button in the topbar's panel group.
 
 The shell owns that chrome and hands `mount` the panel's **body** to fill; the contribution
 never reaches into the widget's DOM:
@@ -624,8 +624,12 @@ registerSidePanel({
   after all (the chart makes room), released, it floats again — the user's choice, saved with
   the shell's state next to the widths. Resizing and width persistence work the same way in
   both placements.
-- **The dock is exclusive.** Opening a panel closes the one showing — the chart keeps its
-  width, and only one column is ever docked. `onOpen` is where a lazy panel renders.
+- **The dock is exclusive by default.** Opening a panel closes the one showing — the chart keeps its
+  width, and only one column is ever docked. A panel that sets `exclusive: false` opts out: it
+  stays open beside whatever else is showing, sits next to other panels that did the same, and
+  neither closes nor is closed by an exclusive one (a list and a log you want to read together).
+  The saved state records the first open panel as `open` and the rest as `alsoOpen`.
+  `onOpen` is where a lazy panel renders.
 - **`onChart` is the rebind hook**, not a one-shot: the widget hands over a new chart instance
   after a symbol/timeframe rebuild, and a workspace re-points the panel at the active cell.
 - Register at import time; after a late registration call `widget.refreshActions()` (an open

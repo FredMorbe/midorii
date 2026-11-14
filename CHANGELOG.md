@@ -168,6 +168,9 @@ Vela's — the charting library Midorii is built on and forked from.
   the standard studies, adjust its settings, choose the timeframe and whether it should fire
   once or every time. Indicator alerts are watched in the background on their own market and
   timeframe, whatever the chart shows, and each one lists in the panel with a switch to pause it.
+- **Keep the Watchlist and the Alerts side by side.** The two panels no longer close each other:
+  open both and they sit next to each other, with the chart making room. Which of them is open
+  is remembered, like the widths you drag.
 
 ### Changed
 
