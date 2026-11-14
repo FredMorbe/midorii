@@ -130,6 +130,19 @@ Because Hyperliquid coins are bare, a bare `BTC` won't collide with Binance's `B
 
 Implement the `DataProvider` interface and register it under any name — see [Adding a data provider](../contributing/adding-a-data-provider.md). The only required method is `getBars`; everything else (`listSymbols`, `searchSymbols`, `getSymbolInfo`, `info`, `subscribe`, `resolveSymbolIcon`) is a progressive enhancement. Use `searchSymbols(query)` for a catalog that is too large or too fluid to enumerate eagerly. Its results appear in the workspace symbol search and keep their provider-qualified identity, but they do not enter bare-symbol resolution. Symbol icons are the provider's call too: `resolveSymbolIcon(descriptor)` returns the icon URL the shells render in the symbol search, the status line and the object tree (the bundled crypto providers predefine a crypto-icon CDN; no resolver, or no URL, means a colored-initials badge — nothing breaks).
 
+## Serving a timeframe the provider lacks
+
+`withResampling(provider)` wraps any provider so a chart can sit on a timeframe the venue does not serve, such as 7 minutes or 3 hours, as long as it is a whole multiple of one the provider declares in `info().supportedTimeframes`.
+
+```ts
+import { withResampling } from '@luxalgo/vela';
+chart.data.registerProvider('bybit', withResampling(new MyProvider()));
+```
+
+What the provider declares is passed through untouched, and a timeframe it declares under another spelling (`1440` for `D`) is asked for as the provider spells it. For anything else the wrapper asks for the longest declared timeframe that divides it exactly, such as `60` for `180`, and builds the candles aligned to the epoch: the first open, the highest high, the lowest low, the last close and the summed volume. The week is never a base, because its candles start on the venue's own weekday. A target nothing divides, and the calendar month, are left to the provider.
+
+Live, the forming candle is built from the base stream and seeded with the base candles its bucket already has. A provider without a stream stays without one. A provider that declares no timeframes is passed through whole. One request asks the provider for at most 20 000 candles; change that with `withResampling(provider, { maxBaseBars })`. Built candles are never stored back: the base candles stay the source of truth.
+
 ## See also
 
 - [Adding a data provider](../contributing/adding-a-data-provider.md) — implement your own.

@@ -11,6 +11,7 @@ import { registerIcon, registerWidgetAction, type WidgetContext } from '../../sr
 import { ensureUIHost, Menu, type MenuItemDescriptor } from '../../src/ui';
 import type { VelaTheme } from '../../src/core/options';
 import { VelaWorkspace } from '../../src/workspace';
+import { withResampling } from '../../src/data/ResamplingProvider';
 import { BRAND } from './about/brand';
 import { mountAnalysisView, type AnalysisViewHandle } from './analysis/analysisView';
 import { BotEngine } from './bot/BotEngine';
@@ -68,6 +69,18 @@ function providers(opts: { experimental?: boolean } = {}) {
     return opts.experimental
         ? { ...stable, experimental: () => new ExperimentalFeedProvider() }
         : stable;
+}
+
+/**
+ * The sources a chart reads, each able to serve a timeframe its venue lacks, such as 7 minutes
+ * or 3 hours, by building it from one the venue has. Alerts, the watchlist and bots keep the
+ * plain sources: they run on a fixed timeframe, and a bot must not trade on candles a venue
+ * never published.
+ */
+function chartProviders(opts: { experimental?: boolean } = {}) {
+    return Object.fromEntries(
+        Object.entries(providers(opts)).map(([name, make]) => [name, () => withResampling(make())]),
+    ) as ReturnType<typeof providers>;
 }
 
 const THEME_STORAGE_KEY = 'midorii-theme';
@@ -148,7 +161,7 @@ const workspace = new VelaWorkspace(chartHost, {
     symbol: CHART_MARKET.symbol,
     timeframe: CHART_MARKET.timeframe,
     brand: BRAND,
-    providers: providers({ experimental: prefs.experimentalMarketFeed }),
+    providers: chartProviders({ experimental: prefs.experimentalMarketFeed }),
     persist: chartDoc.key,
     storage: chartDoc.storage,
 });

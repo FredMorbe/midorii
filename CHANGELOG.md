@@ -181,6 +181,10 @@ Vela's — the charting library Midorii is built on and forked from.
   repeat now take a pause after firing, one minute unless you choose otherwise (up to an hour,
   or none), and the alert's popup shows it while Once is off. A crossing during the pause is not
   told later. Alerts you made before keep firing as they did until you set a pause on them.
+- **Put a chart on any timeframe.** Type 7 for seven minutes or 3H for three hours and the chart
+  builds it, even where the venue only offers a few fixed ones. The candles are built from the
+  longest timeframe the venue has that divides yours, and the forming candle follows the live
+  prices. Timeframes the venue serves itself are unchanged.
 - **Keep the Watchlist and the Alerts side by side.** The two panels no longer close each other:
   open both and they sit next to each other, with the chart making room. Which of them is open
   is remembered, like the widths you drag.

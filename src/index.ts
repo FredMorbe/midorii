@@ -11,6 +11,10 @@ export { MultiProviderFeed } from './data/MultiProviderFeed';
 export { CachingDataFeed } from './data/CachingDataFeed';
 export { BarStore, sharedBarStore } from './data/BarStore';
 export { timeframeToMs } from './data/timeframe';
+export { withResampling } from './data/ResamplingProvider';
+export type { ResamplingOptions } from './data/ResamplingProvider';
+export { planResample, aggregateBars, fixedTimeframeMs } from './data/resample';
+export type { ResamplePlan } from './data/resample';
 export { DataControl } from './core/DataControl';
 export { DrawingsControl } from './core/DrawingsControl';
 
