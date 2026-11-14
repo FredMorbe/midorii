@@ -191,6 +191,15 @@ Vela's — the charting library Midorii is built on and forked from.
   top of each other and the one that moves more runs away. Add Spread / ratio for a pane of its own
   that plots the chart's market against the second one, as a ratio or a difference. Both follow the
   live prices and load further back as you scroll.
+- **Draw the chart as Renko, range bars, line break, Kagi or Point and Figure.** The chart style
+  menu has five new styles that are built by price moving, not by time passing: a Renko brick, a
+  range bar or a line appears only when price has gone far enough, and a quiet market draws
+  nothing. Kagi draws one line that turns when price comes back by the reversal, thick above the
+  last high and thin below the last low, and Point and Figure draws columns of X and O. Each has
+  its own settings tab; the size of a brick, box or reversal is a multiple of the market's
+  average true range, or a fixed price you type. They follow the live prices, and what the open
+  bar has made so far can still change before it is final. Compare and Spread show nothing on
+  these charts, because a second market cannot be lined up with them by time.
 - **Keep the Watchlist and the Alerts side by side.** The two panels no longer close each other:
   open both and they sit next to each other, with the chart making room. Which of them is open
   is remembered, like the widths you drag.

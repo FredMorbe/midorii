@@ -41,7 +41,7 @@ Available on every renderer:
 | Feature | Type | Default | Notes |
 |---|---|---|---|
 | `glow` | number (0 – ~0.7) | `0` | Neon glow/bloom on line series. **WebGL2 only** — the canvas2d backend stores the value but draws no glow. |
-| `priceStyle` | `'candles' \| 'bars' \| 'line' \| 'area' \| 'baseline'` | `'candles'` | How the base price series is drawn. (Heikin Ashi is not yet available.) |
+| `priceStyle` | `'candles' \| 'bars' \| 'line' \| 'area' \| 'baseline' \| 'heikinashi' \| 'rangebars' \| 'renko' \| 'linebreak' \| 'kagi' \| 'pointfigure'` | `'candles'` | How the base price series is drawn (native renderer). Range bars, Renko, line break, Kagi and Point and Figure are built by price moving, not by time passing, so the chart has a different number of bars than the market does. Each has its own settings tab, and the size of a brick, box or reversal is an ATR multiple or a fixed price. |
 | `priceBaseline` | number \| `null` | `null` | Reference price for `priceStyle: 'baseline'`. `null` derives it from the config's `baseline.baselineLevel` (a percent of the visible pane range). |
 | `baselinePrice` | number (read-only) | — | The RESOLVED baseline reference price the paint splits on: `priceBaseline` when set, else the level% of the price pane's current range. For host chrome that colors by baseline position (e.g. a status line's value ink). Writes are ignored. |
 | `candleZOrder` | number | `0` | Draw-order key of the price candles relative to overlay indicators. Indicators default to z ≥ 1, so candles sit behind all overlays by default. |

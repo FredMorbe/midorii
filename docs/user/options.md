@@ -64,7 +64,7 @@ chart.data.registerProvider('binance', new BinanceProvider());
 | `glow` | number | `0` | Neon glow/bloom for line series (~0.6 = strong). **WebGL2 only** — ignored on canvas2d. |
 | `upColor` | string | `#089981` (green) | Bullish candle color (native renderer). |
 | `downColor` | string | `#f23645` (red) | Bearish candle color (native renderer). |
-| `priceStyle` | `'candles' \| 'bars' \| 'line' \| 'area' \| 'baseline'` | `'candles'` | How the base price series is drawn (native renderer). |
+| `priceStyle` | `'candles' \| 'bars' \| 'line' \| 'area' \| 'baseline' \| 'heikinashi' \| 'rangebars' \| 'renko' \| 'linebreak' \| 'kagi' \| 'pointfigure'` | `'candles'` | How the base price series is drawn (native renderer). Range bars, Renko, line break, Kagi and Point and Figure are built by price moving, not by time passing, so the chart has a different number of bars than the market does. Each has its own settings tab, and the size of a brick, box or reversal is an ATR multiple or a fixed price. |
 | `drawings` | `boolean \| { toolbar?, tools?, groups? }` | **toolbar shown** | Interactive [drawing tools](./drawing-tools.md). `true`/omitted ⇒ toolbar visible; `false` ⇒ toolbar hidden (the `chart.drawings` API still works headlessly); object customizes it (see below). Capability-gated (native renderer only). |
 | `settings` | `{ hidden?: string[] }` | **all visible** | Chart-settings dialog visibility policy: setting ids to hide — a whole tab, a group, or a single row (see below). |
 

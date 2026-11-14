@@ -65,6 +65,7 @@ import { type ChartConfig, CHART_CONFIG_VERSION, factoryResetConfig, mergeConfig
 import { BackdropRenderer } from './backdrop/BackdropRenderer';
 import { VolumeRenderer, VOLUME_PANE_FILL_FRAC } from './volume/VolumeRenderer';
 import { rendererLayers, foldBaseModulation, type RendererLayerArgs, type RendererLayerDefinition, type RendererLayerInstance, type BasePaintingModulation } from './layers';
+import './priceDrivenLayers'; // registers the Kagi and Point and Figure layers
 import { stackLayers } from './core/layerStacking';
 import { applyAttributionMarkTheme, attributionMarkColor, createAttributionMark, createCustomMark } from './chrome/AttributionMark';
 import { rasterizeOverlay } from '../shared/dom-raster';

@@ -10,6 +10,7 @@
 // once at import time, before or after charts are constructed.
 import type { OHLCV } from '../core/model/ohlcv';
 import type { BarTransform } from '../core/price-styles/BarTransform';
+import type { SeriesTransformFactory } from '../core/price-styles/SeriesTransform';
 import type { DataControl } from '../core/DataControl';
 
 /** The environment a chart hands to a style's data engine when the style activates. */
@@ -72,6 +73,15 @@ export interface ChartTypeDefinition {
     settings?: ChartTypeSettingsSection;
     /** View-bar transform applied at the chart's outbound bar seam (1:1, time-preserving). */
     barTransform?: BarTransform;
+    /**
+     * Factory for a view transform that changes the bar COUNT and time axis (Renko, range
+     * bars, Kagi, Point and Figure): where `barTransform` is 1:1, this may turn one raw bar
+     * into any number of view bars. Made once per chart with the type's settings, and made
+     * again whenever they change. A type declares one or the other, not both; a type with a
+     * `seriesTransform` is never an extended-ticker modifier (scripts get its view through
+     * the chart's own bars).
+     */
+    seriesTransform?: SeriesTransformFactory;
     /**
      * Whether the type participates in extended tickers (`"SYM;id"` — scripts request the
      * transformed series via `ticker.*`). Defaults to `true` when `barTransform` is set:
@@ -392,5 +402,5 @@ export function chartTypes(): ChartTypeDefinition[] {
 
 /** Ids that act as extended-ticker modifiers (`"SYM;id"`). */
 export function tickerModifierIds(): string[] {
-    return [...registry.values()].filter((d) => d.tickerModifier ?? d.barTransform != null).map((d) => d.id);
+    return [...registry.values()].filter((d) => d.seriesTransform == null && (d.tickerModifier ?? d.barTransform != null)).map((d) => d.id);
 }

@@ -49,6 +49,50 @@ registerChartType({
 Lifecycle: the engine is created lazily the first time the chart enters the style
 (after `chart.ready()`), suspended/resumed on style flips, stopped at destroy.
 
+### A view of another length — `seriesTransform`
+
+A `barTransform` is 1:1 and keeps every bar's time. A type whose bars are made by price
+moving rather than time passing — Renko, range bars, line break, Kagi, Point and Figure —
+makes a different NUMBER of bars, so it declares a `seriesTransform` instead: a factory,
+called once per chart with the type's settings values and again whenever they change, that
+returns a stateful `SeriesTransform`.
+
+```ts
+import { registerChartType, type SeriesTransform } from '@luxalgo/vela/plugin';
+
+registerChartType({
+    id: 'mybricks',
+    label: 'My Bricks',
+    seriesTransform: (settings): SeriesTransform => ({
+        // The whole view from the whole raw series (history loads, a settings change).
+        full: (raw) => makeView(raw),
+        // The raw series changed at its end: the forming bar was revised, or a new one opened.
+        // `view` is what the chart holds now; answer what replaces its tail. Whatever the
+        // transform has finished with must not change, so the work follows the change.
+        update: (raw, view) => ({ from: indexWhereTheViewDiffers, bars: theNewTail }),
+        // Optional: what a layer drawing this type needs and cannot read off the bars
+        // (a box size). Pushed to the layer named like the type after every full derivation.
+        info: () => ({ size }),
+    }),
+});
+```
+
+The view's bars must stay strictly ascending in `time`. When one raw bar makes several view
+bars, space their times a millisecond apart from the raw bar's own time. The raw series stays
+the source of truth: view bars are never stored back as data, and the `'bar'` event carries
+the raw bar. A tick that changes nothing in the view draws nothing and re-runs no script; a
+change at the end goes to the renderer bar by bar, and anything else repaints the view.
+
+The built-in types are the reference: range bars, Renko and line break draw ordinary bars,
+while Kagi (`'kagi'`) and Point and Figure (`'pointfigure'`) set `basePainting: 'none'` and
+are drawn by a renderer layer of the same id. They share one engine, `brickTransform`, which
+takes a small state machine that is fed prices and says which bars it has finished; the
+forming raw bar is run through a copy of it, so a tick can change what that bar makes without
+the machine ever having seen a price it must take back.
+
+Compare and spread indicators, and anything else that lines a second market up with the
+chart by time, show nothing on a view whose bars are not spaced by time.
+
 Two more levers for full-replacement types:
 
 - `basePainting: 'none'` suppresses the base candle painting while the style is active —

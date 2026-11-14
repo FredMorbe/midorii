@@ -41,6 +41,7 @@ export {
     type SeriesDataEngineHost,
 } from './chart-types/registry';
 export type { BarTransform } from './core/price-styles/BarTransform';
+export type { SeriesTransform, SeriesTransformFactory, ViewDelta } from './core/price-styles/SeriesTransform';
 export { registerRendererDefaults, unregisterRendererDefaults, rendererDefaults } from './core/renderer-defaults';
 export {
     registerNativeIndicator,

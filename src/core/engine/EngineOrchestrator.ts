@@ -35,6 +35,7 @@ import type { DataControl } from '../DataControl';
 import { timeframeToMs } from '../../data/timeframe';
 import { parseSymbol } from '../../data/ProviderRegistry';
 import { barTransformFor, parseExtendedTicker, type BarTransform } from '../price-styles/BarTransform';
+import type { SeriesTransform } from '../price-styles/SeriesTransform';
 import { chartType, type SeriesDataEngine } from '../../chart-types/registry';
 import { resolveTheme } from '../theme';
 
@@ -134,6 +135,13 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
     private rawBars: OHLCV[] = [];
     /** The active price style's 1:1 bar transform (null ≡ raw view). */
     private barTransform: BarTransform | null = null;
+    /**
+     * The active price style's view transform that changes the bar COUNT and time axis (Renko,
+     * range bars…), null when the style has none. Stateful and made per chart, from the settings
+     * the user has chosen for the type; {@link viewTransformId} names the style it was made for.
+     */
+    private viewTransform: SeriesTransform | null = null;
+    private viewTransformId: string | null = null;
     // ── chart-type data engines (SDK): one lazily-created engine per style id ──
     private readonly typeEngines = new Map<string, SeriesDataEngine>();
     /** Last-seen chart-type settings per type id (dialog edits + persisted restores) —
@@ -228,6 +236,8 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
         this.renderer.onChartTypeSettingsChange?.((typeId, values) => {
             this.typeSettings.set(typeId, values);
             this.typeEngines.get(typeId)?.onSettings?.(values);
+            // A view transform holds its settings, so a change rebuilds the view under the new ones.
+            if (typeId === this.viewTransformId) this.rebuildView(typeId);
         });
         // The renderer's legend "Move to" menu / row drag reports a move here → route it.
         this.renderer.onMoveIndicator?.((id, target) => this.moveIndicator(id, target));
@@ -246,6 +256,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
         const initialStyle = this.renderer.readFeature('priceStyle');
         if (typeof initialStyle === 'string') this.priceStyle = initialStyle as PriceStyle;
         this.barTransform = barTransformFor(initialStyle);
+        this.viewTransform = this.makeViewTransform(initialStyle);
         // User drawings: owns the model + tool/selection state, drives the renderer's
         // drawings port (inert when the renderer lacks the `userDrawings` capability).
         // The series service backs data-driven drawings that read a finer timeframe:
@@ -1010,12 +1021,74 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
      */
     private syncBarTransform(style: unknown): void {
         const transform = barTransformFor(style);
-        if (transform === this.barTransform) return; // singletons per style — identity is enough
+        const viewId = chartType(style)?.seriesTransform ? (style as string) : null;
+        if (transform === this.barTransform && viewId === this.viewTransformId) return; // singletons per style — identity is enough
         this.barTransform = transform;
+        this.viewTransform = this.makeViewTransform(style);
         if (this.rawBars.length === 0) return;
-        this.bars = transform ? transform.full(this.rawBars) : this.rawBars;
+        this.bars = this.deriveView(this.rawBars);
         this.renderer.setBars(this.bars, { preserveView: true });
         this.reexecuteIndicators();
+    }
+
+    /** The style's view transform made from the settings the user has chosen for it, or null. */
+    private makeViewTransform(style: unknown): SeriesTransform | null {
+        const def = chartType(style);
+        if (!def?.seriesTransform) {
+            this.viewTransformId = null;
+            return null;
+        }
+        this.viewTransformId = def.id;
+        return def.seriesTransform(this.typeSettings.get(def.id) ?? {});
+    }
+
+    /** The view of `raw` under whichever transform the style has (identity when none). */
+    private deriveView(raw: OHLCV[]): OHLCV[] {
+        if (this.viewTransform) {
+            const view = this.viewTransform.full(raw);
+            // A layer that draws the type reads what the view alone does not say (a box size).
+            if (this.viewTransformId) this.renderer.setNativeData?.(this.viewTransformId, this.viewTransform.info?.());
+            return view;
+        }
+        return this.barTransform ? this.barTransform.full(raw) : raw;
+    }
+
+    /** The style's settings changed: make its transform again and repaint the whole view. */
+    private rebuildView(style: string): void {
+        this.viewTransform = this.makeViewTransform(style);
+        if (this.rawBars.length === 0) return;
+        this.bars = this.deriveView(this.rawBars);
+        this.renderer.setBars(this.bars, { preserveView: true });
+        this.reexecuteIndicators();
+    }
+
+    /**
+     * Bring the view up to date after the raw series changed at its end, under a view
+     * transform, and tell the renderer as cheaply as the change allows: a replaced last bar
+     * and bars appended after it go through `updateBar`, anything else (a bar taken back, a
+     * change further up) repaints the view and re-runs the scripts over it. Answers whether
+     * the view changed at all.
+     */
+    private advanceViewTransform(): boolean {
+        const view = this.bars;
+        const before = view.length;
+        const last = view[before - 1];
+        const delta = this.viewTransform!.update(this.rawBars, view);
+        if (delta.bars.length === 0 && delta.from >= before) return false;
+
+        view.length = delta.from;
+        for (const bar of delta.bars) view.push(bar);
+
+        const replacesLast = delta.from === before - 1 && last !== undefined && delta.bars[0]?.time === last.time;
+        const incremental = view.length >= before && delta.bars.length > 0 && (delta.from === before || replacesLast);
+        this.barCause = view.length > before ? 'bar' : 'tick';
+        if (incremental) {
+            for (const bar of delta.bars) this.renderer.updateBar(bar);
+        } else {
+            this.renderer.setBars(view, { preserveView: true });
+            this.reexecuteIndicators();
+        }
+        return true;
     }
 
     /** Stop + re-run every visible Pine indicator (its input bars changed wholesale). */
@@ -1059,7 +1132,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
      */
     private setBarSeries(raw: OHLCV[], opts?: { preserveView?: boolean; clearing?: boolean }): void {
         this.rawBars = raw;
-        this.bars = this.barTransform ? this.barTransform.full(raw) : raw;
+        this.bars = this.deriveView(raw);
         this.renderer.setBars(this.bars, { preserveView: opts?.preserveView });
         // The first PAINTED batch ends the loading state — on a deep history that is the quick
         // preview, well before the load pipeline completes. Only a non-empty series counts: the
@@ -1085,7 +1158,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
             this.rawBars[this.rawBars.length - 1] = bar;
             // The forming candle refined — its values are still provisional.
             this.barCause = 'tick';
-            if (this.barTransform) {
+            if (this.barTransform && !this.viewTransform) {
                 // Replacing the FORMING bar: the previous view bar is the one BEFORE it.
                 viewBar = this.barTransform.next(bar, this.bars[this.bars.length - 2]);
                 this.bars[this.bars.length - 1] = viewBar;
@@ -1095,11 +1168,22 @@ export class EngineOrchestrator implements IndicatorController, PaneController {
             // A new bar opened, so the one before it is now FINAL — the distinction
             // `script:run` carries as `cause: 'bar'`.
             this.barCause = 'bar';
-            if (this.barTransform) {
+            if (this.barTransform && !this.viewTransform) {
                 viewBar = this.barTransform.next(bar, this.bars[this.bars.length - 1]);
                 this.bars.push(viewBar);
             }
         } else return;
+
+        if (this.viewTransform) {
+            // A view of another length: the transform says what changed, and a tick that
+            // finishes no brick changes nothing, so nothing is drawn and no script re-runs.
+            const raw = this.barCause;
+            const changed = this.advanceViewTransform();
+            if (!changed) this.barCause = raw;
+            this.events.emit('bar', bar);
+            if (notify && changed) this.notifySessionsBars(this.historyState === 'backfill' ? 'backfill' : undefined);
+            return;
+        }
 
         this.renderer.updateBar(viewBar);
         this.events.emit('bar', bar);

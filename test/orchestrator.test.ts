@@ -27,6 +27,7 @@ import type { DataProvider, ProviderInfo, ProviderCapabilities, SymbolDescriptor
 import type { OHLCV } from '../src/core/model/ohlcv';
 import { registerNativeIndicator, unregisterNativeIndicator } from '../src/core/native-indicators/NativeIndicator';
 import { heikinAshiFull } from '../src/core/price-styles/heikin-ashi';
+import { lineBreakFactory, renkoFactory } from '../src/chart-types/priceDriven';
 import { registerChartType, unregisterChartType, type SeriesDataEngineHost } from '../src/chart-types/registry';
 import type { BarTransform } from '../src/core/price-styles/BarTransform';
 import type { NativeIndicator, NativeIndicatorContext, NativeIndicatorDescriptor } from '../src/core/native-indicators/NativeIndicator';
@@ -2487,5 +2488,124 @@ describe('EngineOrchestrator — force_overlay routing', () => {
         // forced series + background + table + one of each drawing kind (line, box, label, polyline, linefill)
         expect(summary.forcedOverlay).toBe(8);
         chart.destroy();
+    });
+});
+
+describe('EngineOrchestrator — price-driven chart types (series transform)', () => {
+    const HOUR = 3_600_000;
+    const fixed = { sizeMode: 'Fixed', size: 0.5 };
+
+    async function mountChart(opts: { live: boolean; feed?: MarketDataFeed; style?: string } = { live: false }) {
+        const renderer = new FakeRenderer();
+        if (opts.style) renderer.priceStyleFeature = opts.style;
+        const chart = new Vela({} as unknown as HTMLElement, { live: opts.live, volume: false }, { renderer, engines: [], dataFeed: opts.feed ?? new MockDataFeed() });
+        await chart.ready();
+        await flush();
+        return { chart, renderer };
+    }
+
+    it('switching to renko replaces the view with bricks, viewport preserved, and switching back restores the raw bars', async () => {
+        const { renderer } = await mountChart();
+        const raw = makeBars(50);
+        expect(renderer.bars).toEqual(raw);
+
+        renderer.firePriceStyle('renko' as PriceStyle);
+        await flush();
+        const bricks = renkoFactory({}).full(raw);
+        expect(bricks.length).not.toBe(raw.length);
+        expect(renderer.bars).toEqual(bricks);
+        expect(renderer.setBarsCalls[renderer.setBarsCalls.length - 1]).toEqual({ n: bricks.length, preserveView: true });
+
+        renderer.firePriceStyle('candles');
+        await flush();
+        expect(renderer.bars).toEqual(raw);
+    });
+
+    it('a chart constructed in a price-driven style loads the derived view from the start', async () => {
+        const { renderer } = await mountChart({ live: false, style: 'linebreak' });
+        expect(renderer.bars).toEqual(lineBreakFactory({}).full(makeBars(50)));
+    });
+
+    it('a change to the type\'s settings rebuilds the view under them, and another type\'s change leaves it alone', async () => {
+        const { renderer } = await mountChart();
+        renderer.firePriceStyle('renko' as PriceStyle);
+        await flush();
+        const calls = renderer.setBarsCalls.length;
+
+        renderer.ctsCb!('rangebars', { sizeMode: 'Fixed', size: 9 });
+        expect(renderer.setBarsCalls.length).toBe(calls);
+
+        renderer.ctsCb!('renko', fixed);
+        const expected = renkoFactory(fixed).full(makeBars(50));
+        expect(renderer.bars).toEqual(expected);
+        expect(renderer.setBarsCalls.length).toBe(calls + 1);
+    });
+
+    it('settings that arrive before the style is chosen are the ones its first view is made with', async () => {
+        const { renderer } = await mountChart();
+        renderer.ctsCb!('renko', fixed);
+        renderer.firePriceStyle('renko' as PriceStyle);
+        await flush();
+        expect(renderer.bars).toEqual(renkoFactory(fixed).full(makeBars(50)));
+    });
+
+    it('live ticks add bricks, take back what a revised forming bar had made, and leave the bar event raw', async () => {
+        const feed = new GapFeed(10);
+        const { chart, renderer } = await mountChart({ live: true, feed });
+        const seen: OHLCV[] = [];
+        chart.on('bar', (b) => seen.push(b));
+        renderer.ctsCb!('renko', fixed);
+        renderer.firePriceStyle('renko' as PriceStyle);
+        await flush();
+
+        // What the renderer holds: its last full set, then every update applied the way it applies them.
+        let mirror = renderer.bars.slice();
+        const setBars = renderer.setBars.bind(renderer);
+        renderer.setBars = (bars, o) => { setBars(bars, o); mirror = bars.slice(); };
+        const updateBar = renderer.updateBar.bind(renderer);
+        renderer.updateBar = (bar) => {
+            updateBar(bar);
+            const last = mirror[mirror.length - 1];
+            if (last && last.time === bar.time) mirror[mirror.length - 1] = bar;
+            else mirror.push(bar);
+        };
+
+        let current = makeBars(10);
+        const feedBar = async (bar: OHLCV): Promise<void> => {
+            current = bar.time === current[current.length - 1]!.time ? [...current.slice(0, -1), bar] : [...current, bar];
+            feed.push!(bar);
+            await flush();
+            expect(mirror).toEqual(renkoFactory(fixed).full(current));
+        };
+        const forming = (close: number): OHLCV => {
+            const last = makeBars(10)[9]!;
+            return { ...last, close, high: Math.max(last.high, close), low: Math.min(last.low, close) };
+        };
+
+        await feedBar(forming(112)); // a big up move: bricks appear
+        expect(mirror.length).toBeGreaterThan(renkoFactory(fixed).full(makeBars(10)).length);
+        await feedBar(forming(100)); // it falls back: the bricks that move had made go with it
+        await feedBar(mkBar(makeBars(10)[9]!.time + HOUR, 90)); // a new bar opens, far below
+        await feedBar({ ...mkBar(makeBars(10)[9]!.time + HOUR, 90), close: 95, high: 96 });
+
+        expect(seen).toHaveLength(4);
+        expect(seen.every((b) => b.close !== undefined)).toBe(true);
+        expect(seen[0]!.close).toBe(112);
+        expect(seen[2]!.time).toBe(makeBars(10)[9]!.time + HOUR);
+    });
+
+    it('a tick that finishes no brick draws nothing and re-runs nothing', async () => {
+        const feed = new GapFeed(10);
+        const { renderer } = await mountChart({ live: true, feed });
+        renderer.ctsCb!('renko', { sizeMode: 'Fixed', size: 50 }); // far larger than any move
+        renderer.firePriceStyle('renko' as PriceStyle);
+        await flush();
+        const sets = renderer.setBarsCalls.length;
+        const updates = renderer.updatedBars.length;
+        const last = makeBars(10)[9]!;
+        feed.push!({ ...last, close: last.close + 0.3, high: last.high + 0.3 });
+        await flush();
+        expect(renderer.setBarsCalls.length).toBe(sets);
+        expect(renderer.updatedBars.length).toBe(updates);
     });
 });
